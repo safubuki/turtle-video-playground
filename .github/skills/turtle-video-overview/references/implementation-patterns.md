@@ -1282,3 +1282,17 @@
   - Set `referrerPolicy: 'no-referrer'` on external Gemini calls.
   - Keep request body schema and fallback flow unchanged to avoid behavior/performance regressions.
 - **Note**: Future Gemini integrations should never place API keys in query parameters.
+
+### 13-60. Playground repository manual sync workflow (copy-based, no history merge)
+
+- **Files**: `.github/workflows/manual-sync-from-dev.yml`
+- **Issue**:
+  - Public playground repositories often need "latest dev files" without exposing upstream commit-by-commit history in the target repo.
+  - Simple merge/rebase sync can leak unwanted commit graph details and increase conflict risk for repo-specific files.
+- **Pattern**:
+  - Use `workflow_dispatch` only, so sync runs manually when the maintainer decides.
+  - Clone source with `--depth=1` and copy files via `rsync -a --delete` for content sync (not git history sync).
+  - Exclude the sync workflow itself (`--exclude '.github/workflows/manual-sync-from-dev.yml'`) to prevent self-deletion during `--delete`.
+  - Commit only when staged changes exist; otherwise exit without creating empty commits.
+- **Note**:
+  - If the target repo has playground-only files (e.g., `CNAME`, repo-specific workflows), add explicit `--exclude` entries before enabling `--delete`.
