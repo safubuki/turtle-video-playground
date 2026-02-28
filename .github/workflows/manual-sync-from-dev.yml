@@ -1,0 +1,45 @@
+name: Manual Sync from safubuki/turtle-video
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_REPO: https://github.com/safubuki/turtle-video.git
+      SOURCE_REF: main
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Clone source repository
+        run: |
+          rm -rf ../source-repo
+          git clone --depth=1 --branch "$SOURCE_REF" "$SOURCE_REPO" ../source-repo
+
+      - name: Sync files from source repository
+        run: |
+          rsync -a --delete \
+            --exclude '.git' \
+            --exclude '.github/workflows/manual-sync-from-dev.yml' \
+            ../source-repo/ ./
+
+      - name: Commit changes if needed
+        run: |
+          git config user.name "sync-bot"
+          git config user.email "actions@github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "chore(sync): sync from safubuki/turtle-video ($(date -u +'%Y-%m-%d %H:%M:%S UTC'))"
+
+      - name: Push changes
+        run: git push
