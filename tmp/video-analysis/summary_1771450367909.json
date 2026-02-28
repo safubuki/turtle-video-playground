@@ -1,0 +1,27 @@
+{
+  "mode": "summary",
+  "input_path": "C:\\Users\\kamep\\Downloads\\turtle_video_1771450367909.mp4",
+  "fps": 30.0,
+  "total_frames": 1230,
+  "duration_sec_estimate": 41.0,
+  "black_threshold": 8.0,
+  "luma_stats": {
+    "min": 0.8623191550925926,
+    "max": 133.7641771556713,
+    "mean": 84.69173829683506,
+    "p05": 25.637416521990744,
+    "p50": 82.97234375,
+    "p95": 133.74890004701967
+  },
+  "motion_stats": {
+    "sample_count": 1229,
+    "min": 0.0,
+    "max": 57.0793571472168,
+    "mean": 3.7371222223693246,
+    "p05": 4.709201530204177e-05,
+    "p50": 0.7183604836463928,
+    "p95": 15.941502571105957
+  },
+  "black_frame_count": 19,
+  "black_frame_ratio": 0.015447154471544716
+}

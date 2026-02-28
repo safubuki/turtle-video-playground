@@ -1,0 +1,46 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+dist_test
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Documentation drafts (local only)
+Docs/AgentSkillsBlog.md
+
+# Local developer-only media analysis environment
+.venv/
+.venv-media-analysis/
+.venv-media-analysis*/
+.media-analysis-output/
+.tmp-empty-requirements.txt
+scripts/dev/requirements-empty.txt
+scripts/dev/__pycache__/
+
+# Skill sync artifacts
+.skills-backups/
