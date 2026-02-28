@@ -1271,28 +1271,30 @@
   - `プロジェクト構造` をトップレベル起点の最新構成（`.github/skills`, `.agents/skills`, `.agent/skills` 含む）へ更新
 - **Note**: Agent Skills の運用先を変更した場合は、READMEの導入手順・プロジェクト構造・関連ドキュメントを同時更新する。
 
-### 13-59. Gemini API key transport hardening (query string -> header)
+### 13-59. Gemini APIキー転送の堅牢化（クエリ文字列→ヘッダー）
 
-- **Files**: `src/components/TurtleVideo.tsx`, `src/hooks/useAiNarration.ts`
-- **Issue**:
-  - Gemini API calls appended `?key=...` to request URLs, which increases accidental exposure risk through URL surfaces.
-- **Pattern**:
-  - Keep endpoint format as `${GEMINI_API_BASE_URL}/{model}:generateContent` (no query key).
-  - Send API key via `x-goog-api-key` request header.
-  - Set `referrerPolicy: 'no-referrer'` on external Gemini calls.
-  - Keep request body schema and fallback flow unchanged to avoid behavior/performance regressions.
-- **Note**: Future Gemini integrations should never place API keys in query parameters.
+- **対象ファイル**: `src/components/TurtleVideo.tsx`, `src/hooks/useAiNarration.ts`
+- **問題**:
+  - Gemini API 呼び出しでリクエスト URL に `?key=...` を付与していたため、URL 経由でAPIキーが意図せず露出するリスクがあった。
+- **対応パターン**:
+  - エンドポイント形式は `${GEMINI_API_BASE_URL}/{model}:generateContent`（クエリキーなし）を維持する。
+  - APIキーは `x-goog-api-key` リクエストヘッダーで送信する。
+  - 外部 Gemini 呼び出しに `referrerPolicy: 'no-referrer'` を設定する。
+  - 動作・パフォーマンスのリグレッションを避けるため、リクエストボディのスキーマとフォールバックフローは変更しない。
+- **注意**: 今後 Gemini を統合する際は、APIキーをクエリパラメータに含めないこと。
 
-### 13-60. Playground repository manual sync workflow (copy-based, no history merge)
+### 13-60. Playgroundリポジトリへの手動同期ワークフロー（コピーベース・履歴マージなし）
 
-- **Files**: `.github/workflows/manual-sync-from-dev.yml`
-- **Issue**:
-  - Public playground repositories often need "latest dev files" without exposing upstream commit-by-commit history in the target repo.
-  - Simple merge/rebase sync can leak unwanted commit graph details and increase conflict risk for repo-specific files.
-- **Pattern**:
-  - Use `workflow_dispatch` only, so sync runs manually when the maintainer decides.
-  - Clone source with `--depth=1` and copy files via `rsync -a --delete` for content sync (not git history sync).
-  - Exclude the sync workflow itself (`--exclude '.github/workflows/manual-sync-from-dev.yml'`) to prevent self-deletion during `--delete`.
-  - Commit only when staged changes exist; otherwise exit without creating empty commits.
-- **Note**:
-  - If the target repo has playground-only files (e.g., `CNAME`, repo-specific workflows), add explicit `--exclude` entries before enabling `--delete`.
+- **対象ファイル**: `.github/workflows/manual-sync-from-dev.yml`
+- **問題**:
+  - 公開 Playground リポジトリでは、アップストリームのコミット履歴を公開先に露出させずに「最新の開発ファイル」だけを反映させたい場合がある。
+  - 通常の merge/rebase 同期では意図しないコミットグラフが漏洩し、リポジトリ固有ファイルのコンフリクトリスクも高まる。
+- **対応パターン**:
+  - `workflow_dispatch` のみ使用し、メンテナーが任意のタイミングで手動実行する。
+  - ソースを `--depth=1` でクローンし、`rsync -a --delete` でファイルをコピー同期する（git 履歴同期ではない）。
+  - `--delete` 実行時に同期ワークフロー自身が削除されないよう `--exclude '.github/workflows/manual-sync-from-dev.yml'` を指定する。
+  - ステージング済み変更がある場合のみコミットし、差分がない場合は空コミットを作らずに終了する。
+  - コミットメッセージのタイムスタンプには `TZ=Asia/Tokyo` を使用し、同期コミットメッセージに `JTC` ラベルを付与する。
+  - 同期プッシュ後、GitHub Actions API 経由で `deploy.yml` をディスパッチし、手動同期直後にデプロイを自動実行する。
+- **注意**:
+  - Playground 専用ファイル（例: `CNAME`、リポジトリ固有のワークフロー）が存在する場合は、`--delete` を有効にする前に明示的な `--exclude` エントリを追加すること。
