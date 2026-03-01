@@ -1033,3 +1033,12 @@
   - Add one bullet under `主要な機能` that explains the guard in user terms.
   - Describe detection by swipe direction and touch duration, and clarify that mistaken slider changes are restored automatically.
 - **Note**: Keep this sentence aligned with `useSwipeProtectedValue` behavior to avoid overpromising.
+
+### 13-42. Sync commit timezone label must come from `date` zone output
+
+- **Files**: `.github/workflows/manual-sync-from-dev.yml`
+- **Issue**: Sync workflow commit message used a hardcoded `JTC` suffix, causing incorrect timezone labels in commit logs.
+- **Pattern**:
+  - Generate the timestamp with `TZ=Asia/Tokyo date +'%Y-%m-%d %H:%M:%S %Z'` and embed it directly in the commit message.
+  - Avoid hardcoded timezone abbreviations in workflow commit messages.
+- **Note**: If historical commits already contain incorrect labels, rewrite commit messages and force-push with lease.

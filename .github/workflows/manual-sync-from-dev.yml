@@ -40,7 +40,7 @@ jobs:
             echo "No changes to commit."
             exit 0
           fi
-          git commit -m "chore(sync): sync from safubuki/turtle-video ($(TZ=Asia/Tokyo date +'%Y-%m-%d %H:%M:%S') JTC)"
+          git commit -m "chore(sync): sync from safubuki/turtle-video ($(TZ=Asia/Tokyo date +'%Y-%m-%d %H:%M:%S %Z'))"
 
       - name: Push changes
         run: git push
