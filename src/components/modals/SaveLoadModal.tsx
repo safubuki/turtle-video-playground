@@ -320,10 +320,9 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
     } catch (error) {
       const message = getProjectStoreErrorMessage(error);
       useLogStore.getState().error('SYSTEM', '手動保存に失敗', { error: message });
-      if (isStorageQuotaError(error) && hasAutoSave) {
+      if (isStorageQuotaError(error)) {
+        await refreshSaveInfo();
         setMode('confirmAutoDeleteForSave');
-      } else if (isStorageQuotaError(error)) {
-        onToast('保存容量が不足しています。不要な保存データを削除してください', 'error');
       } else {
         onToast('保存に失敗しました', 'error');
       }

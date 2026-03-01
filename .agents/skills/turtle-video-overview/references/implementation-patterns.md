@@ -1034,11 +1034,16 @@
   - Describe detection by swipe direction and touch duration, and clarify that mistaken slider changes are restored automatically.
 - **Note**: Keep this sentence aligned with `useSwipeProtectedValue` behavior to avoid overpromising.
 
-### 13-42. Sync commit timezone label must come from `date` zone output
+### 13-42. Manual save failure hardening for clip edits on Android (IDB transaction cleanup + recovery path)
 
-- **Files**: `.github/workflows/manual-sync-from-dev.yml`
-- **Issue**: Sync workflow commit message used a hardcoded `JTC` suffix, causing incorrect timezone labels in commit logs.
+- **Files**: `src/utils/indexedDB.ts`, `src/components/modals/SaveLoadModal.tsx`
+- **Issue**:
+  - On Android, manual save could fail after timeline trim/duration edits, and once it failed, subsequent saves often kept failing.
+  - IndexedDB failure paths did not always close DB connections, and quota recovery UI depended on stale `hasAutoSave` state.
 - **Pattern**:
-  - Generate the timestamp with `TZ=Asia/Tokyo date +'%Y-%m-%d %H:%M:%S %Z'` and embed it directly in the commit message.
-  - Avoid hardcoded timezone abbreviations in workflow commit messages.
-- **Note**: If historical commits already contain incorrect labels, rewrite commit messages and force-push with lease.
+  - In IndexedDB wrapper functions (`saveProject` / `loadProject` / `deleteProject`), always close DB in every terminal path (`oncomplete`, `onabort`, `onerror`, and request error) with idempotent settle guards.
+  - Resolve writes/deletes on `transaction.oncomplete` (commit-confirmed) instead of request success timing.
+  - On manual save quota errors, always route to `confirmAutoDeleteForSave` after `refreshSaveInfo()` so recovery remains available even if local save-info state is stale.
+- **Note**:
+  - Request success in IndexedDB does not guarantee transaction commit; commit confirmation must be based on transaction completion.
+  - Recovery UX should not rely solely on cached `lastAutoSave` values.
