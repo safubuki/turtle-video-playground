@@ -462,7 +462,7 @@ const SectionHelpModal: React.FC<SectionHelpModalProps> = ({ isOpen, section, on
       case 'position_chip':
         return (
           <span key={`${token}-${index}`} className={`${chipBaseClass} px-2 py-1 border-blue-500/40 bg-blue-500/10 text-blue-200`}>
-            <Move className="w-3 h-3" /> 位置X/Y
+            <Move className="w-3 h-3" /> 位置
           </span>
         );
       case 'blackbar_toggle_chip':

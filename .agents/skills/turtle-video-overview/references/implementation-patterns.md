@@ -1015,3 +1015,21 @@
   - Set `referrerPolicy: 'no-referrer'` on external Gemini calls.
   - Keep request body schema and fallback flow unchanged to avoid behavior/performance regressions.
 - **Note**: Future Gemini integrations should never place API keys in query parameters.
+
+### 13-40. Caption help position chip label should avoid strict XY implication
+
+- **Files**: `src/components/modals/SectionHelpModal.tsx`
+- **Issue**: Caption help chip label showed `位置X/Y`, but actual caption positioning is not intended as strict XY coordinate control in user guidance.
+- **Pattern**:
+  - Use `位置` as the help chip label for caption style guidance.
+  - Keep the move icon for visual association, but avoid over-specific coordinate wording.
+- **Note**: Help labels should describe practical operation granularity, not internal parameter semantics.
+
+### 13-41. App help "main features" should include swipe-misoperation guard summary
+
+- **Files**: `src/constants/sectionHelp.ts`
+- **Issue**: The top-level help summary did not mention mobile slider misoperation protection, making accidental value-reset behavior look unexpected.
+- **Pattern**:
+  - Add one bullet under `主要な機能` that explains the guard in user terms.
+  - Describe detection by swipe direction and touch duration, and clarify that mistaken slider changes are restored automatically.
+- **Note**: Keep this sentence aligned with `useSwipeProtectedValue` behavior to avoid overpromising.
