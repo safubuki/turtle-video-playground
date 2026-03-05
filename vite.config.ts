@@ -18,8 +18,8 @@ export default defineConfig({
         background_color: '#0f172a',
         display: 'standalone',
         orientation: 'portrait',
-        scope: '/turtle-video/',
-        start_url: '/turtle-video/',
+        scope: '/turtle-video-playground/',
+        start_url: '/turtle-video-playground/',
         icons: [
           {
             src: 'pwa-192x192.png',
@@ -61,7 +61,7 @@ export default defineConfig({
     }),
   ],
   // GitHub Pages用のベースパス設定
-  base: '/turtle-video/',
+  base: '/turtle-video-playground/',
   server: {
     port: 3000,
     open: true,
