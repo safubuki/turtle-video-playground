@@ -31,6 +31,46 @@ jobs:
             --exclude '.github/workflows/manual-sync-from-dev.yml' \
             ../source-repo/ ./
 
+      - name: Apply repository-specific GitHub Pages path
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          target_base = f"/{os.environ['REPO_NAME']}/"
+          print(f"Applying TARGET_BASE={target_base}")
+
+          vite_config = Path("vite.config.ts")
+          if vite_config.exists():
+              original = vite_config.read_text(encoding="utf-8")
+              updated = original
+              updated = re.sub(r"scope:\s*'[^']*'", f"scope: '{target_base}'", updated, count=1)
+              updated = re.sub(r"start_url:\s*'[^']*'", f"start_url: '{target_base}'", updated, count=1)
+              updated = re.sub(r"base:\s*'[^']*'", f"base: '{target_base}'", updated, count=1)
+              if updated != original:
+                  vite_config.write_text(updated, encoding="utf-8")
+                  print("Updated vite.config.ts")
+              else:
+                  print("No changes in vite.config.ts")
+          else:
+              print("Skipped: vite.config.ts not found")
+
+          index_html = Path("index.html")
+          if index_html.exists():
+              original = index_html.read_text(encoding="utf-8")
+              updated = original.replace("/turtle-video/", target_base)
+              if updated != original:
+                  index_html.write_text(updated, encoding="utf-8")
+                  print("Updated index.html")
+              else:
+                  print("No changes in index.html")
+          else:
+              print("Skipped: index.html not found")
+          PY
+
       - name: Commit changes if needed
         run: |
           git config user.name "sync-bot"
