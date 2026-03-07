@@ -239,6 +239,8 @@ const TurtleVideo: React.FC = () => {
   const activeVideoIdRef = useRef<string | null>(null); // 現在再生中のビデオID
   const lastToggleTimeRef = useRef(0); // デバウンス用
   const videoRecoveryAttemptsRef = useRef<Record<string, number>>({}); // ビデオリカバリー試行時刻を追跡
+  const exportPlayFailedRef = useRef<Record<string, boolean>>({}); // エクスポート中にplay()が失敗した動画を追跡
+  const exportFallbackSeekAtRef = useRef<Record<string, number>>({}); // フォールバックシーク実行時刻を追跡
   const seekingVideosRef = useRef<Set<string>>(new Set()); // シーク中のビデオIDを追跡
   const lastSeekTimeRef = useRef(0); // 最後のシーク時刻（スロットリング用）
   const pendingSeekRef = useRef<number | null>(null); // 保留中のシーク位置
@@ -449,13 +451,16 @@ const TurtleVideo: React.FC = () => {
                 isLastTimelineItem &&
                 isNearTimelineEnd;
               const exportSyncThreshold = _isExporting
-                ? (isIosSafari ? 0.2 : 0.12)
+                ? (isIosSafari ? 1.2 : 0.5)
                 : 0.5;
+              const hasExportPlayFailure = _isExporting && !!exportPlayFailedRef.current[activeId];
               const needsCorrection =
                 _isExporting &&
                 isActivePlaying &&
                 !isSeekingRef.current &&
                 !activeEl.seeking &&
+                !activeEl.paused &&
+                !hasExportPlayFailure &&
                 Math.abs(activeEl.currentTime - targetTime) > exportSyncThreshold;
 
               if (shouldForceEndFrameAlign && activeEl.readyState >= 1 && !activeEl.seeking) {
@@ -609,8 +614,9 @@ const TurtleVideo: React.FC = () => {
             if (conf.type === 'video') {
               const videoEl = element as HTMLVideoElement;
               const targetTime = (conf.trimStart || 0) + localTime;
+              const hasExportPlayFailure = _isExporting && !!exportPlayFailedRef.current[id];
               const syncThreshold = _isExporting
-                ? (isIosSafari ? 0.2 : 0.12)
+                ? (hasExportPlayFailure ? 0.35 : (isIosSafari ? 1.2 : 0.5))
                 : (isIosSafari ? 1.0 : 0.5);
 
               // アクティブなビデオIDを更新
@@ -643,8 +649,29 @@ const TurtleVideo: React.FC = () => {
                   totalDurationRef.current > 0 &&
                   time >= totalDurationRef.current - 0.2;
 
+                const shouldUseExportFallbackSeek =
+                  _isExporting &&
+                  hasExportPlayFailure &&
+                  videoEl.paused &&
+                  !isVideoSeeking &&
+                  Math.abs(videoEl.currentTime - targetTime) > 0.04;
+                if (shouldUseExportFallbackSeek) {
+                  const nowMs = Date.now();
+                  const lastSeekAtMs = exportFallbackSeekAtRef.current[id] || 0;
+                  // シークし過ぎると seeking 状態が連続し描画が止まるため、実行間隔を制御する。
+                  if (nowMs - lastSeekAtMs >= 140) {
+                    exportFallbackSeekAtRef.current[id] = nowMs;
+                    videoEl.currentTime = targetTime;
+                  }
+                }
+
                 // 大きなズレがあれば補正（ended不要時のみ）
-                if (!isVideoSeeking && !isEndedNearEnd && Math.abs(videoEl.currentTime - targetTime) > syncThreshold) {
+                if (
+                  !isVideoSeeking &&
+                  !isEndedNearEnd &&
+                  !hasExportPlayFailure &&
+                  Math.abs(videoEl.currentTime - targetTime) > syncThreshold
+                ) {
                   videoEl.currentTime = targetTime;
                 }
                 // 一時停止していれば再生開始
@@ -654,8 +681,22 @@ const TurtleVideo: React.FC = () => {
                 // paused→バッファ停滞→readyState上がらず のデッドロックが発生する。
                 // ただし ended 状態のビデオへの play() は position 0 への
                 // シークを発動するため、終端付近では抑止する。
-                if (videoEl.paused && videoEl.readyState >= 1 && !isEndedNearEnd) {
-                  videoEl.play().catch(() => { });
+                if (videoEl.paused && videoEl.readyState >= 1 && !isEndedNearEnd && !hasExportPlayFailure) {
+                  videoEl.play().then(() => {
+                    if (_isExporting) {
+                      delete exportPlayFailedRef.current[id];
+                      delete exportFallbackSeekAtRef.current[id];
+                    }
+                  }).catch((err) => {
+                    if (_isExporting && !exportPlayFailedRef.current[id]) {
+                      exportPlayFailedRef.current[id] = true;
+                      exportFallbackSeekAtRef.current[id] = 0;
+                      logWarn('RENDER', 'エクスポート中の動画再生開始に失敗。シーク同期フォールバックへ切替', {
+                        videoId: id,
+                        error: err instanceof Error ? err.message : String(err),
+                      });
+                    }
+                  });
                 }
               } else if (!isActivePlaying && !isUserSeeking) {
                 // 停止中かつユーザーがシーク操作していない場合
@@ -2409,6 +2450,8 @@ const TurtleVideo: React.FC = () => {
     wasPlayingBeforeSeekRef.current = false;
     seekingVideosRef.current.clear();
     pendingSeekRef.current = null;
+    exportPlayFailedRef.current = {};
+    exportFallbackSeekAtRef.current = {};
 
     // 保留中のシーク処理タイマーをクリア
     if (pendingSeekTimeoutRef.current) {
@@ -2816,14 +2859,22 @@ const TurtleVideo: React.FC = () => {
       }
 
       if (isExportMode) {
-        setCurrentTime(0);
-        Object.values(mediaElementsRef.current).forEach((el) => {
-          if (el.tagName === 'VIDEO') {
-            try {
-              (el as HTMLVideoElement).currentTime = 0;
-            } catch (e) {
-              /* ignore */
+        setCurrentTime(fromTime);
+        currentTimeRef.current = fromTime;
+        mediaItemsRef.current.forEach((item) => {
+          if (item.type !== 'video') return;
+          const videoEl = mediaElementsRef.current[item.id] as HTMLVideoElement | undefined;
+          if (!videoEl) return;
+          try {
+            if (videoEl.readyState === 0 && !videoEl.error) {
+              videoEl.load();
             }
+            const targetTime = Number.isFinite(item.trimStart) ? Math.max(0, item.trimStart) : 0;
+            if (Math.abs(videoEl.currentTime - targetTime) > 0.01) {
+              videoEl.currentTime = targetTime;
+            }
+          } catch (e) {
+            /* ignore */
           }
         });
 
@@ -2953,48 +3004,56 @@ const TurtleVideo: React.FC = () => {
           logInfo('AUDIO', 'オーディオプリロード完了');
         }
 
-        // iOS Safari: エクスポート開始前に先頭フレームを確実に準備する。
-        // これを行わないと、直前のプレビュー最終フレームが先頭に混入することがある。
-        if (isIosSafari) {
-          const firstItem = mediaItemsRef.current[0];
-          if (firstItem?.type === 'video') {
-            const firstVideo = mediaElementsRef.current[firstItem.id] as HTMLVideoElement | undefined;
-            if (firstVideo) {
-              const targetTime = firstItem.trimStart || 0;
-              try {
-                if (firstVideo.readyState === 0) {
-                  firstVideo.load();
-                }
-                if (Math.abs(firstVideo.currentTime - targetTime) > 0.01) {
-                  firstVideo.currentTime = targetTime;
-                }
-              } catch {
-                // ignore
+        // エクスポート開始前に先頭フレームを確実に準備する。
+        // これを行わないと、開始トリムがある動画で先頭フレームが未確定のまま黒フレーム化しやすい。
+        const firstItem = mediaItemsRef.current[0];
+        if (firstItem?.type === 'video') {
+          const firstVideo = mediaElementsRef.current[firstItem.id] as HTMLVideoElement | undefined;
+          if (firstVideo) {
+            const targetTime = firstItem.trimStart || 0;
+            try {
+              if (firstVideo.readyState === 0) {
+                firstVideo.load();
               }
-
-              await new Promise<void>((resolve) => {
-                let done = false;
-                const finish = () => {
-                  if (done) return;
-                  done = true;
-                  clearTimeout(timeoutId);
-                  firstVideo.removeEventListener('loadeddata', onReady);
-                  firstVideo.removeEventListener('canplay', onReady);
-                  firstVideo.removeEventListener('seeked', onReady);
-                  resolve();
-                };
-                const onReady = () => {
-                  if (firstVideo.readyState >= 2 && !firstVideo.seeking) {
-                    finish();
-                  }
-                };
-                const timeoutId = setTimeout(finish, 1500);
-                firstVideo.addEventListener('loadeddata', onReady);
-                firstVideo.addEventListener('canplay', onReady);
-                firstVideo.addEventListener('seeked', onReady);
-                onReady();
-              });
+              if (Math.abs(firstVideo.currentTime - targetTime) > 0.01) {
+                firstVideo.currentTime = targetTime;
+              }
+            } catch {
+              // ignore
             }
+
+            await new Promise<void>((resolve) => {
+              let done = false;
+              const finish = () => {
+                if (done) return;
+                done = true;
+                clearTimeout(timeoutId);
+                firstVideo.removeEventListener('loadeddata', onReady);
+                firstVideo.removeEventListener('canplay', onReady);
+                firstVideo.removeEventListener('seeked', onReady);
+                resolve();
+              };
+              const onReady = () => {
+                const drift = Math.abs(firstVideo.currentTime - targetTime);
+                if (firstVideo.readyState >= 2 && !firstVideo.seeking && drift <= 0.05) {
+                  finish();
+                  return;
+                }
+                // 目標時刻に未到達のまま ready 判定される環境があるため、待機中も再シークを試行する。
+                if (!firstVideo.seeking && firstVideo.readyState >= 1 && drift > 0.05) {
+                  try {
+                    firstVideo.currentTime = targetTime;
+                  } catch {
+                    // ignore
+                  }
+                }
+              };
+              const timeoutId = setTimeout(finish, 4000);
+              firstVideo.addEventListener('loadeddata', onReady);
+              firstVideo.addEventListener('canplay', onReady);
+              firstVideo.addEventListener('seeked', onReady);
+              onReady();
+            });
           }
         }
 

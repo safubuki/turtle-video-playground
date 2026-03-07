@@ -1,12 +1,12 @@
 /**
  * @file SettingsModal.tsx
  * @author Turtle Village
- * @description アプリケーションの設定（Gemini APIキーの管理）およびシステムログの閲覧を行うモーダル。
+ * @description アプリケーションの設定（Gemini APIキーの管理、変更履歴、システムログの閲覧）を行うモーダル。
  */
 import React, { useState, useEffect, useRef } from 'react';
 import {
   X, Key, Eye, EyeOff, ExternalLink, CheckCircle, AlertCircle,
-  FileText, Copy, Download, Trash2, CheckCircle2, RefreshCw, CircleHelp
+  FileText, Copy, Download, Trash2, CheckCircle2, RefreshCw, CircleHelp, History
 } from 'lucide-react';
 import { useLogStore } from '../../stores';
 import { useUpdateStore } from '../../stores/updateStore';
@@ -16,6 +16,7 @@ import { useDisableBodyScroll } from '../../hooks/useDisableBodyScroll';
 // アプリバージョン
 import versionData from '../../../version.json';
 export const APP_VERSION = versionData.version;
+const APP_RELEASE_HISTORY = versionData.history ?? null;
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -51,6 +52,19 @@ export function setStoredApiKey(key: string): void {
 }
 
 type TabType = 'apikey' | 'logs';
+type InfoPanelType = 'help' | 'history' | null;
+
+export function getNextInfoPanel(
+  current: InfoPanelType,
+  panel: Exclude<InfoPanelType, null>,
+  hasReleaseHistory: boolean
+): InfoPanelType {
+  if (panel === 'history' && !hasReleaseHistory) {
+    return current;
+  }
+
+  return current === panel ? null : panel;
+}
 
 /**
  * ログレベルに応じた色を返す
@@ -80,7 +94,7 @@ function getLogLevelBg(level: string): string {
 
 /**
  * 設定モーダルコンポーネント
- * APIキーの設定UI + ログ表示
+ * APIキーの設定UI + 変更履歴 + ログ表示
  */
 const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
   const [activeTab, setActiveTab] = useState<TabType>('apikey');
@@ -88,8 +102,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
   const [showKey, setShowKey] = useState(false);
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [showHelp, setShowHelp] = useState(false);
-  const showHelpRef = useRef(false);
+  const [activeInfoPanel, setActiveInfoPanel] = useState<InfoPanelType>(null);
+  const activeInfoPanelRef = useRef<InfoPanelType>(null);
   const modalHistoryIdRef = useRef<string | null>(null);
   const closedByPopstateRef = useRef(false);
   const apikeyScrollRef = useRef<HTMLDivElement>(null);
@@ -121,7 +135,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
       setSaved(false);
       setShowKey(false);
       setCopied(false);
-      setShowHelp(false);
+      setActiveInfoPanel(null);
       // ログタブを開いたらエラーフラグをクリア
       if (activeTab === 'logs') {
         clearErrorFlag();
@@ -130,8 +144,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
   }, [isOpen, activeTab, clearErrorFlag]);
 
   useEffect(() => {
-    showHelpRef.current = showHelp;
-  }, [showHelp]);
+    activeInfoPanelRef.current = activeInfoPanel;
+  }, [activeInfoPanel]);
 
   useEffect(() => {
     if (!isOpen || typeof window === 'undefined') return;
@@ -145,8 +159,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
     window.history.pushState({ ...currentState, __settingsModal: stateId }, '');
 
     const handlePopState = () => {
-      if (showHelpRef.current) {
-        setShowHelp(false);
+      if (activeInfoPanelRef.current) {
+        setActiveInfoPanel(null);
         const state = (window.history.state && typeof window.history.state === 'object')
           ? window.history.state as Record<string, unknown>
           : {};
@@ -302,6 +316,10 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
 
   const errorCount = entries.filter(e => e.level === 'ERROR').length;
   const warnCount = entries.filter(e => e.level === 'WARN').length;
+  const hasReleaseHistory = Boolean(APP_RELEASE_HISTORY);
+  const toggleInfoPanel = (panel: Exclude<InfoPanelType, null>) => {
+    setActiveInfoPanel((prev) => getNextInfoPanel(prev, panel, hasReleaseHistory));
+  };
 
   if (!isOpen) return null;
 
@@ -324,13 +342,33 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
               ⚙️ 設定
             </h2>
             <button
-              onClick={() => setShowHelp((prev) => !prev)}
-              className="p-1 rounded-lg transition border border-blue-500/45 bg-blue-500/10 text-blue-300 hover:bg-blue-500/20 hover:text-blue-200"
+              onClick={() => toggleInfoPanel('help')}
+              className={`p-1 rounded-lg transition border ${
+                activeInfoPanel === 'help'
+                  ? 'border-blue-300/55 bg-blue-400/20 text-blue-100'
+                  : 'border-blue-500/45 bg-blue-500/10 text-blue-300 hover:bg-blue-500/20 hover:text-blue-200'
+              }`}
               title="このセクションの説明"
               aria-label="設定モーダルの説明"
+              aria-pressed={activeInfoPanel === 'help'}
             >
               <CircleHelp className="w-4 h-4" />
             </button>
+            {hasReleaseHistory && (
+              <button
+                onClick={() => toggleInfoPanel('history')}
+                className={`p-1 rounded-lg transition border ${
+                  activeInfoPanel === 'history'
+                    ? 'border-gray-300/55 bg-gray-200/20 text-gray-100'
+                    : 'border-gray-400/35 bg-gray-200/8 text-gray-300 hover:bg-gray-200/15 hover:text-gray-100'
+                }`}
+                title="前回バージョンからの変更点"
+                aria-label="前回バージョンからの変更点を表示"
+                aria-pressed={activeInfoPanel === 'history'}
+              >
+                <History className="w-4 h-4" />
+              </button>
+            )}
           </div>
           <button
             onClick={onClose}
@@ -371,7 +409,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
 
         {/* コンテンツ */}
         <div className="flex-1 overflow-hidden flex flex-col">
-          {showHelp && (
+          {activeInfoPanel === 'help' && (
             <div className="p-3 border-b border-gray-700/70 shrink-0">
               <div className="rounded-xl border border-orange-400/45 bg-linear-to-br from-orange-500/18 via-amber-500/12 to-orange-500/6 p-3 md:p-4 space-y-2">
                 <div className="flex items-start justify-between gap-2">
@@ -379,7 +417,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
                     <CircleHelp className="w-4 h-4" /> 設定の使い方
                   </h3>
                   <button
-                    onClick={() => setShowHelp(false)}
+                    onClick={() => setActiveInfoPanel(null)}
                     className="p-1.5 rounded-md border border-orange-300/40 bg-orange-500/10 text-orange-100 hover:bg-orange-500/25 hover:border-orange-200/60 transition"
                     title="ヘルプを閉じる"
                     aria-label="ヘルプを閉じる"
@@ -404,6 +442,59 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
                   APIキー取得（Google AI Studio）
                   <ExternalLink className="w-3.5 h-3.5" />
                 </a>
+              </div>
+            </div>
+          )}
+          {activeInfoPanel === 'history' && APP_RELEASE_HISTORY && (
+            <div className="p-3 border-b border-gray-700/70 shrink-0">
+              <div className="rounded-xl border border-gray-300/20 bg-linear-to-br from-gray-100/14 via-slate-100/10 to-gray-300/6 p-3 md:p-4 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="inline-flex items-center gap-1.5 rounded-md border border-gray-300/25 bg-gray-100/10 px-2 py-1 text-[11px] md:text-xs font-semibold text-gray-100">
+                      <History className="w-3.5 h-3.5" />
+                      前回タグからの主な変更
+                    </div>
+                    <h3 className="text-sm font-bold text-gray-50">
+                      v{APP_RELEASE_HISTORY.previousVersion} → v{APP_VERSION}
+                    </h3>
+                  </div>
+                  <button
+                    onClick={() => setActiveInfoPanel(null)}
+                    className="p-1.5 rounded-md border border-gray-300/25 bg-gray-100/10 text-gray-100 hover:bg-gray-100/20 hover:border-gray-200/40 transition"
+                    title="履歴を閉じる"
+                    aria-label="履歴を閉じる"
+                  >
+                    <X className="w-[18px] h-[18px]" />
+                  </button>
+                </div>
+                <p className="text-xs md:text-sm text-gray-100/90 leading-relaxed">
+                  {APP_RELEASE_HISTORY.summary}
+                </p>
+                <div className="grid gap-2">
+                  {APP_RELEASE_HISTORY.highlights.map((item, index) => (
+                    <div
+                      key={`${item.title}-${index}`}
+                      className="rounded-lg border border-gray-300/15 bg-black/15 px-3 py-2.5"
+                    >
+                      <div className="flex items-start gap-2">
+                        <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-gray-300/25 bg-gray-100/10 text-[10px] font-bold text-gray-100">
+                          {index + 1}
+                        </span>
+                        <div className="space-y-1">
+                          <div className="text-xs md:text-sm font-semibold text-gray-50">
+                            {item.title}
+                          </div>
+                          <p className="text-[11px] md:text-xs text-gray-200/85 leading-relaxed">
+                            {item.description}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[11px] md:text-xs text-gray-300/80 leading-relaxed">
+                  この欄は全履歴ではなく、前回タグから今回バージョンまでの概要だけを表示します。
+                </p>
               </div>
             </div>
           )}

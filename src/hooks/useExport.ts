@@ -1247,6 +1247,11 @@ export function useExport(): UseExportReturn {
         // 3. AudioEncoder の設定（常に作成する）
         let audioEncoderOutputChunks = 0;
         let audioEncoderOutputBytes = 0;
+        let audioEncoderSkippedChunks = 0;
+        let audioEncoderClippedChunks = 0;
+        let audioEncoderClippedDurationUs = 0;
+        // AAC-LC は通常 1024 sample/frame。duration が取れないケースの保険値。
+        const fallbackAacChunkDurationUs = Math.max(1, Math.round((1024 / audioContext.sampleRate) * 1e6));
         const audioEncoder = new AudioEncoder({
           output: (chunk, meta) => {
             audioEncoderOutputChunks++;
@@ -1270,6 +1275,50 @@ export function useExport(): UseExportReturn {
                 totalBytes: audioEncoderOutputBytes,
               });
             }
+            const chunkTimestampUs = Math.max(0, Math.round(chunk.timestamp));
+            const chunkDurationUs = typeof chunk.duration === 'number' && Number.isFinite(chunk.duration) && chunk.duration > 0
+              ? Math.round(chunk.duration)
+              : fallbackAacChunkDurationUs;
+            const chunkEndUs = chunkTimestampUs + chunkDurationUs;
+
+            if (Number.isFinite(maxAudioTimestampUs)) {
+              if (chunkTimestampUs >= maxAudioTimestampUs) {
+                audioEncoderSkippedChunks++;
+                if (audioEncoderSkippedChunks === 1 || audioEncoderSkippedChunks % 25 === 0) {
+                  useLogStore.getState().warn('RENDER', '[DIAG-AUDIO-CLAMP] 音声チャンクを終端超過でスキップ', {
+                    chunkTimestampUs,
+                    maxAudioTimestampUs,
+                    skippedChunks: audioEncoderSkippedChunks,
+                  });
+                }
+                return;
+              }
+
+              if (chunkEndUs > maxAudioTimestampUs) {
+                const clippedDurationUs = Math.max(0, Math.round(maxAudioTimestampUs - chunkTimestampUs));
+                if (clippedDurationUs <= 0) {
+                  audioEncoderSkippedChunks++;
+                  return;
+                }
+                const rawData = new Uint8Array(chunk.byteLength);
+                chunk.copyTo(rawData);
+                muxer.addAudioChunkRaw(rawData, chunk.type, chunkTimestampUs, clippedDurationUs, meta);
+                audioEncoderClippedChunks++;
+                audioEncoderClippedDurationUs += chunkDurationUs - clippedDurationUs;
+                if (audioEncoderClippedChunks === 1 || audioEncoderClippedChunks % 10 === 0) {
+                  useLogStore.getState().warn('RENDER', '[DIAG-AUDIO-CLAMP] 音声チャンク終端をクランプ', {
+                    chunkTimestampUs,
+                    originalDurationUs: chunkDurationUs,
+                    clippedDurationUs,
+                    maxAudioTimestampUs,
+                    clippedChunks: audioEncoderClippedChunks,
+                    totalClippedDurationUs: audioEncoderClippedDurationUs,
+                  });
+                }
+                return;
+              }
+            }
+
             muxer.addAudioChunk(chunk, meta);
           },
           error: (e) => {
@@ -1890,6 +1939,9 @@ export function useExport(): UseExportReturn {
         useLogStore.getState().info('RENDER', '[DIAG-7] エンコーダー flush 開始', {
           audioEncoderOutputChunks,
           audioEncoderOutputBytes,
+          audioEncoderSkippedChunks,
+          audioEncoderClippedChunks,
+          audioEncoderClippedDurationMs: Math.round(audioEncoderClippedDurationUs / 1000),
           audioEncoderState: audioEncoder.state,
           audioEncoderQueueSize: audioEncoder.encodeQueueSize,
           videoEncoderState: videoEncoder.state,
@@ -1903,6 +1955,9 @@ export function useExport(): UseExportReturn {
           useLogStore.getState().info('RENDER', '[DIAG-7c] AudioEncoder flush 完了', {
             outputChunksAfterFlush: audioEncoderOutputChunks,
             outputBytesAfterFlush: audioEncoderOutputBytes,
+            skippedChunks: audioEncoderSkippedChunks,
+            clippedChunks: audioEncoderClippedChunks,
+            totalClippedDurationMs: Math.round(audioEncoderClippedDurationUs / 1000),
           });
         } catch (flushErr) {
           useLogStore.getState().error('RENDER', '[DIAG-7c] AudioEncoder flush 失敗', {
@@ -1919,6 +1974,9 @@ export function useExport(): UseExportReturn {
           bufferByteLength: muxer.target.buffer.byteLength,
           audioEncoderOutputChunks,
           audioEncoderOutputBytes,
+          audioEncoderSkippedChunks,
+          audioEncoderClippedChunks,
+          audioEncoderClippedDurationMs: Math.round(audioEncoderClippedDurationUs / 1000),
         });
 
         // Canvasストリームを停止
@@ -1950,6 +2008,9 @@ export function useExport(): UseExportReturn {
             fileSizeMB: (buffer.byteLength / 1024 / 1024).toFixed(2),
             audioEncoderOutputChunks,
             audioEncoderOutputBytes,
+            audioEncoderSkippedChunks,
+            audioEncoderClippedChunks,
+            audioEncoderClippedDurationMs: Math.round(audioEncoderClippedDurationUs / 1000),
             audioDataPresent: audioEncoderOutputChunks > 0,
             offlineAudioDone,
           });
