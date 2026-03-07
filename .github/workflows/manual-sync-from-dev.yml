@@ -37,10 +37,11 @@ jobs:
       # git 履歴は混ぜず、ファイル内容だけを mirror する。
       - name: 同期元ファイルを mirror
         run: |
-          # この workflow 自身は --delete で消さない。
+          # この workflow 自身と、同期後に使う補助スクリプトは --delete で消さない。
           rsync -a --delete \
             --exclude '.git' \
             --exclude '.github/workflows/manual-sync-from-dev.yml' \
+            --exclude 'scripts/apply-playground-sync-overrides.mjs' \
             ../source-repo/ ./
 
       # rsync で上書きされた Playground 固有差分をここで戻す。
