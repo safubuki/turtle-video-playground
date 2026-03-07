@@ -178,7 +178,7 @@ Remove-Item -Recurse -Force .\.venv-media-analysis
 システムに `gh` が無い場合でも、このリポジトリ同梱の `.\.tools\gh\bin\gh.exe` を利用できます。
 
 ```powershell
-cd C:\git_home\turtle-video
+cd C:\git_home\turtle-video-playground
 $env:GH_CONFIG_DIR="$PWD\.tools\gh\config"
 .\.tools\gh\bin\gh.exe auth login --hostname github.com
 .\.tools\gh\bin\gh.exe auth status

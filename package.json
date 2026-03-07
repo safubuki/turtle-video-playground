@@ -1,5 +1,5 @@
 {
-  "name": "turtle-video",
+  "name": "turtle-video-playground",
   "version": "1.0.0",
   "type": "module",
   "description": "タートルビデオ動画編集",
@@ -30,15 +30,15 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/safubuki/turtle-video.git"
+    "url": "git+https://github.com/safubuki/turtle-video-playground.git"
   },
   "keywords": [],
   "author": "",
   "license": "GPL-3.0",
   "bugs": {
-    "url": "https://github.com/safubuki/turtle-video/issues"
+    "url": "https://github.com/safubuki/turtle-video-playground/issues"
   },
-  "homepage": "https://github.com/safubuki/turtle-video#readme",
+  "homepage": "https://github.com/safubuki/turtle-video-playground#readme",
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.18",
     "lucide-react": "^0.563.0",

@@ -1,4 +1,4 @@
-# タートルビデオ
+# タートルビデオ Playground
 
 ブラウザで動作する動画編集ソフトです。動画・画像・BGM・ナレーション・キャプションをまとめて編集し、動画ファイルとして書き出せます。PWA対応のためスマホでもアプリ感覚で利用できます。
 
@@ -194,7 +194,7 @@ Agent Skills は、使用する AI エディタ・ツールによって読み込
 ## プロジェクト構造
 
 ```
-turtle-video/
+turtle-video-playground/
 ├── .github/skills/      # GitHub Copilot向け Agent Skills
 ├── .agents/skills/      # GPT Codex向け Agent Skills
 ├── .agent/skills/       # Google Gemini向け Agent Skills
