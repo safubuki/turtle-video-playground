@@ -258,7 +258,6 @@ const AiModal: React.FC<AiModalProps> = ({
   return (
     <div
       className="fixed inset-0 z-100 bg-black/80 backdrop-blur-sm flex items-end md:items-center md:justify-center md:p-4"
-      onClick={onClose}
     >
       <div
         className="bg-gray-800 border border-gray-700 w-full md:max-w-lg rounded-t-2xl md:rounded-2xl shadow-2xl overflow-hidden animate-ai-modal-sheet"

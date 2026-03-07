@@ -1171,3 +1171,17 @@
 - **注意**:
   - `Docs/review/` は詳細基準であり、入口としてルート `AGENTS.md` から明示参照する
   - `Docs/review/` を置くだけでは、Codex が常に自動参照する前提ではない
+
+### 13-51. モーダルの領域外クリック挙動は用途で分ける（AIのみ閉じない）
+
+- **ファイル**: `src/components/modals/AiModal.tsx`, `src/components/modals/SettingsModal.tsx`, `src/components/modals/SaveLoadModal.tsx`, `src/components/modals/SectionHelpModal.tsx`, `src/components/modals/CaptionSettingsModal.tsx`
+- **問題**:
+  - モーダルごとに backdrop クリック/タップ時の挙動が揺れると、誤操作時の期待が崩れる
+  - 特に AIナレーションは文字入力中の内容を失いやすく、領域外クリックで閉じると事故コストが高い
+- **対策**:
+  - `AiModal` は領域外クリック/タップでは閉じない
+  - `SettingsModal`、`SectionHelpModal`、`SaveLoadModal`、`CaptionSettingsModal` は領域外クリック/タップで閉じる
+  - 閉じるモーダルは backdrop 側で `onClose`、本体側で `stopPropagation()` を明示して、意図せぬバブリングを防ぐ
+- **注意**:
+  - 入力途中の破壊コストが高いモーダルだけは「閉じない」を選び、その他は操作の軽さを優先する
+  - モーダル追加時は、入力破壊リスクの有無を基準に backdrop 方針を先に決める

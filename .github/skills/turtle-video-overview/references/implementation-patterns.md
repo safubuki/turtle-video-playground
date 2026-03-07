@@ -1324,3 +1324,17 @@
   - 状態遷移は小さな純関数に切り出して、履歴あり/なしの両方をユニットテストで確認する。
 - **注意**:
   - `popstate` による戻る操作は、見えていない履歴パネルを閉じるだけの無駄な遷移を挟まないこと。
+
+### 13-63. モーダルの領域外クリック挙動は用途で分ける（AIのみ閉じない）
+
+- **対象ファイル**: `src/components/modals/AiModal.tsx`, `src/components/modals/SettingsModal.tsx`, `src/components/modals/SaveLoadModal.tsx`, `src/components/modals/SectionHelpModal.tsx`, `src/components/modals/CaptionSettingsModal.tsx`
+- **問題**:
+  - モーダルごとに backdrop クリック/タップ時の挙動が揺れると、誤操作時の期待が崩れる。
+  - 特に AIナレーションは文字入力の途中内容を失いやすく、領域外クリックで閉じると事故コストが高い。
+- **対応パターン**:
+  - `AiModal` は領域外クリック/タップでは閉じない。
+  - `SettingsModal`、`SectionHelpModal`、`SaveLoadModal`、`CaptionSettingsModal` は領域外クリック/タップで閉じる。
+  - 閉じるモーダルは backdrop 側で `onClose`、本体側で `stopPropagation()` を明示し、意図しないバブリングを防ぐ。
+- **注意**:
+  - 入力途中の破壊コストが高いモーダルだけは「閉じない」を選び、その他は操作の軽さを優先する。
+  - 新しいモーダルを追加する際は、入力破壊リスクの有無を基準に backdrop 方針を先に決める。

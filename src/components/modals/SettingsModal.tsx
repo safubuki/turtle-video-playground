@@ -324,9 +324,13 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-end md:items-center md:justify-center z-[300] md:p-4">
+    <div
+      className="fixed inset-0 bg-black/70 flex items-end md:items-center md:justify-center z-[300] md:p-4"
+      onClick={onClose}
+    >
       <div
         className="bg-gray-900 rounded-t-2xl md:rounded-2xl border border-gray-700 w-full max-w-lg shadow-2xl max-h-[calc(100dvh-0.5rem)] md:max-h-[90vh] flex flex-col overflow-hidden animate-ai-modal-sheet"
+        onClick={(e) => e.stopPropagation()}
         onTouchStart={handleSheetTouchStart}
         onTouchMove={handleSheetTouchMove}
         onTouchEnd={handleSheetTouchEnd}
