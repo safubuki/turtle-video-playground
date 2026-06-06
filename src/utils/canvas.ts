@@ -54,7 +54,13 @@ export function calculateFitScale(
 }
 
 /**
- * フェードアルファ値を計算
+ * フェードアルファ値を計算（線形補間）
+ *
+ * 一般的な動画編集ソフトと同様、フェード期間中の経過時間にアルファ値を比例させる。
+ * イージング曲線 (smoothstep など) は一見滑らかに見えても、開始/終了付近のアルファ変化が
+ * 知覚できないほど小さくなり「フェードが始まらない / 終わらない」印象を与えるため、
+ * プレビューでは線形が最も自然に映る。
+ *
  * @param localTime - ローカル再生時間
  * @param duration - 総再生時間
  * @param fadeIn - フェードイン有効
@@ -141,6 +147,82 @@ export function safeSetVideoTime(
   if (Number.isFinite(time) && Number.isFinite(max)) {
     video.currentTime = Math.max(0, Math.min(max, time));
   }
+}
+
+export interface CaptionGlyphOptions {
+  text: string;
+  font: string;
+  fillColor: string;
+  strokeColor: string;
+  strokeWidth: number;
+}
+
+/**
+ * キャプション文字（stroke + fill）を 1 枚のオフスクリーン Canvas に描画して返す。
+ * 呼び出し側はこの Canvas を `drawImage` でメインキャンバスに転写するだけで済むため、
+ * フェード時に stroke と fill が二重にアルファ合成されて「輪郭だけ残る」現象を防げる。
+ *
+ * 文字幅は呼び出し前に `font` を設定した一時 Canvas で計測する。
+ * ストローク太さや句読点による descenders を含めるため左右上下に余白を確保する。
+ */
+export function createCaptionGlyphCanvas(options: CaptionGlyphOptions): HTMLCanvasElement {
+  const { text, font, fillColor, strokeColor, strokeWidth } = options;
+
+  const measureCanvas = document.createElement('canvas');
+  const measureCtx = measureCanvas.getContext('2d');
+  if (!measureCtx) {
+    measureCanvas.width = 1;
+    measureCanvas.height = 1;
+    return measureCanvas;
+  }
+  measureCtx.font = font;
+  measureCtx.textBaseline = 'middle';
+  const metrics = measureCtx.measureText(text);
+
+  // フォントサイズを font 文字列から推定（フォールバック）
+  const fontSizeMatch = /(\d+(?:\.\d+)?)px/.exec(font);
+  const inferredFontSize = fontSizeMatch ? parseFloat(fontSizeMatch[1]) : 48;
+
+  const ascent = Number.isFinite(metrics.actualBoundingBoxAscent)
+    ? metrics.actualBoundingBoxAscent
+    : inferredFontSize * 0.8;
+  const descent = Number.isFinite(metrics.actualBoundingBoxDescent)
+    ? metrics.actualBoundingBoxDescent
+    : inferredFontSize * 0.3;
+
+  // strokeWidth はキャプション設定値で、描画時には *2 した lineWidth を使う。
+  // ストロークは線の中心を境に内外に広がるため、片側で strokeWidth 分のはみ出しが起きる。
+  // 加えてアンチエイリアスの余白として数 px 確保する。
+  const paddingX = Math.ceil(strokeWidth * 2 + 8);
+  const paddingY = Math.ceil(strokeWidth * 2 + 8);
+  const width = Math.max(1, Math.ceil(metrics.width) + paddingX * 2);
+  const height = Math.max(1, Math.ceil(ascent + descent) + paddingY * 2);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return canvas;
+
+  ctx.font = font;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+
+  const centerX = width / 2;
+  const centerY = height / 2;
+
+  // stroke を先に描き、その上に fill を載せる。オフスクリーン内では globalAlpha=1.0 のため
+  // stroke と fill が二重合成される問題は起きず、外側ストロークと内側塗りが想定通り重なる。
+  if (strokeWidth > 0) {
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = strokeWidth * 2;
+    ctx.strokeText(text, centerX, centerY);
+  }
+  ctx.fillStyle = fillColor;
+  ctx.fillText(text, centerX, centerY);
+
+  return canvas;
 }
 
 /**

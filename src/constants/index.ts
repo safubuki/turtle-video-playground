@@ -6,8 +6,16 @@
 import type { VoiceOption } from '../types';
 
 // キャンバス設定
-export const CANVAS_WIDTH = 1280;
-export const CANVAS_HEIGHT = 720;
+// プレビュー描画は軽量に保つため 1280×720 を上限とする。
+// 書き出し時のみソース動画の解像度に応じて 1920×1080 まで動的に拡大する。
+export const MAX_CANVAS_WIDTH = 1920;
+export const MAX_CANVAS_HEIGHT = 1080;
+export const MAX_PREVIEW_CANVAS_WIDTH = 1280;
+export const MAX_PREVIEW_CANVAS_HEIGHT = 720;
+export const DEFAULT_CANVAS_WIDTH = MAX_PREVIEW_CANVAS_WIDTH;
+export const DEFAULT_CANVAS_HEIGHT = MAX_PREVIEW_CANVAS_HEIGHT;
+export const CANVAS_WIDTH = MAX_PREVIEW_CANVAS_WIDTH;
+export const CANVAS_HEIGHT = MAX_PREVIEW_CANVAS_HEIGHT;
 export const FPS = 30;
 
 // フェード設定
@@ -62,4 +70,24 @@ export const VOICE_OPTIONS: VoiceOption[] = [
 ];
 
 // エクスポート設定
-export const EXPORT_VIDEO_BITRATE = 5000000; // 5Mbps
+// 1080p で 12 Mbps を目安に、実際のキャンバス解像度に比例した
+// ビットレートを計算する（最低 6 Mbps、上限 12 Mbps）。
+export const EXPORT_VIDEO_BITRATE = 12_000_000; // 12 Mbps (1920x1080 時の上限)
+export const EXPORT_VIDEO_BITRATE_MIN = 6_000_000; // 6 Mbps (低解像度時の下限)
+
+/**
+ * 与えられた解像度に応じてエクスポート用のビデオビットレートを算出する。
+ *
+ * 1920×1080 を基準に、画素数の比に応じて線形にスケーリングする。
+ * 圧縮アーティファクトを抑えるため、最低でも 6 Mbps は確保する。
+ */
+export function computeExportVideoBitrate(width: number, height: number): number {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return EXPORT_VIDEO_BITRATE;
+  }
+  const targetPixels = MAX_CANVAS_WIDTH * MAX_CANVAS_HEIGHT;
+  const actualPixels = width * height;
+  const ratio = Math.min(1, actualPixels / targetPixels);
+  const bitrate = Math.round(EXPORT_VIDEO_BITRATE * ratio);
+  return Math.max(EXPORT_VIDEO_BITRATE_MIN, bitrate);
+}

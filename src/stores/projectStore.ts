@@ -8,23 +8,23 @@ import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import type { MediaItem, AudioTrack, Caption, CaptionSettings, NarrationClip } from '../types';
 import {
-  saveProject,
-  loadProject,
-  deleteProject,
-  deleteAllProjects,
-  getProjectsInfo,
-  fileToArrayBuffer,
-  blobUrlToArrayBuffer,
-  arrayBufferToFile,
+  getProjectPersistenceAdapter,
   type ProjectData,
   type SaveSlot,
   type SerializedMediaItem,
   type SerializedAudioTrack,
   type SerializedCaption,
   type SerializedNarrationClip,
-} from '../utils/indexedDB';
+} from './projectPersistence';
+import type {
+  ProjectLaunchContext,
+  ProjectPersistenceHealthSnapshot,
+  ProjectPersistenceMode,
+} from './projectPersistenceHealth';
 import { useLogStore } from './logStore';
+import { createDiagnosticId } from '../utils/diagnostics';
 import versionData from '../../version.json';
+import { useUIStore } from './uiStore';
 
 export function getProjectStoreErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -42,12 +42,156 @@ export function isStorageQuotaError(error: unknown): boolean {
   );
 }
 
+export type SaveFailureRecoveryAction =
+  | 'delete-auto-and-retry'
+  | 'reset-database-and-retry'
+  | 'inspect-media'
+  | 'retry';
+
+export type SaveFailureCategory =
+  | 'storage-quota'
+  | 'indexeddb-open'
+  | 'indexeddb-transaction'
+  | 'media-serialization'
+  | 'unknown';
+
+export interface SaveFailureInfo {
+  operationId: string;
+  operation: 'manual' | 'auto';
+  category: SaveFailureCategory;
+  reason: string;
+  occurredAt: string;
+  recoveryAction: SaveFailureRecoveryAction;
+  storageEstimate: { usage: number; quota: number } | null;
+  persistenceMode: ProjectPersistenceMode | null;
+  launchContext: ProjectLaunchContext | null;
+}
+
+export type AutoSaveRuntimeStatus =
+  | 'idle'
+  | 'running'
+  | 'saved'
+  | 'skipped-nochange'
+  | 'skipped-empty'
+  | 'paused-processing'
+  | 'failed';
+
+function isLikelyIndexedDbTransactionError(error: unknown): boolean {
+  const lower = getProjectStoreErrorMessage(error).toLowerCase();
+  return (
+    lower.includes('indexeddb') ||
+    lower.includes('aborterror') ||
+    lower.includes('unknownerror') ||
+    lower.includes('invalidstateerror') ||
+    lower.includes('transaction') ||
+    lower.includes('database')
+  );
+}
+
+function isLikelyIndexedDbOpenError(error: unknown): boolean {
+  const lower = getProjectStoreErrorMessage(error).toLowerCase();
+  return (
+    lower.includes('open') ||
+    lower.includes('versionerror') ||
+    lower.includes('notfounderror') ||
+    lower.includes('blocked') ||
+    lower.includes('upgrade') ||
+    lower.includes('データベースを開')
+  );
+}
+
+function isLikelyMediaSerializationError(error: unknown): boolean {
+  const lower = getProjectStoreErrorMessage(error).toLowerCase();
+  return (
+    lower.includes('ファイルの読み込みに失敗') ||
+    lower.includes('failed to fetch') ||
+    lower.includes('blob') ||
+    lower.includes('readasarraybuffer')
+  );
+}
+
+function classifySaveFailureCategory(error: unknown): SaveFailureCategory {
+  if (isStorageQuotaError(error)) {
+    return 'storage-quota';
+  }
+  if (isLikelyMediaSerializationError(error)) {
+    return 'media-serialization';
+  }
+  if (isLikelyIndexedDbOpenError(error)) {
+    return 'indexeddb-open';
+  }
+  if (isLikelyIndexedDbTransactionError(error)) {
+    return 'indexeddb-transaction';
+  }
+  return 'unknown';
+}
+
+function isStorageNearQuota(estimate: { usage: number; quota: number } | null): boolean {
+  if (!estimate) return false;
+  if (!(estimate.quota > 0)) return false;
+  return estimate.usage / estimate.quota >= 0.85;
+}
+
+function classifySaveFailureRecoveryAction(params: {
+  error: unknown;
+  estimate: { usage: number; quota: number } | null;
+  hasAutoSave: boolean;
+}): SaveFailureRecoveryAction {
+  if (isStorageQuotaError(params.error) || (params.hasAutoSave && isStorageNearQuota(params.estimate))) {
+    return params.hasAutoSave ? 'delete-auto-and-retry' : 'retry';
+  }
+  if (isLikelyMediaSerializationError(params.error)) {
+    return 'inspect-media';
+  }
+  if (isLikelyIndexedDbTransactionError(params.error)) {
+    return params.hasAutoSave ? 'delete-auto-and-retry' : 'reset-database-and-retry';
+  }
+  return 'retry';
+}
+
+async function buildSaveFailureInfo(params: {
+  operationId: string;
+  operation: 'manual' | 'auto';
+  error: unknown;
+  hasAutoSave: boolean;
+  health: ProjectPersistenceHealthSnapshot | null;
+}): Promise<SaveFailureInfo> {
+  let estimate: { usage: number; quota: number } | null = null;
+  try {
+    estimate = await getProjectPersistenceAdapter().getStorageEstimate();
+  } catch {
+    // ignore estimate failures
+  }
+
+  return {
+    operationId: params.operationId,
+    operation: params.operation,
+    category: classifySaveFailureCategory(params.error),
+    reason: getProjectStoreErrorMessage(params.error),
+    occurredAt: new Date().toISOString(),
+    recoveryAction: classifySaveFailureRecoveryAction({
+      error: params.error,
+      estimate,
+      hasAutoSave: params.hasAutoSave,
+    }),
+    storageEstimate: estimate,
+    persistenceMode: params.health?.persistenceMode ?? null,
+    launchContext: params.health?.launchContext ?? null,
+  };
+}
+
 interface ProjectState {
   isSaving: boolean;
   isLoading: boolean;
   lastAutoSave: string | null;
+  lastAutoSaveActivityAt: string | null;
+  autoSaveRuntimeStatus: AutoSaveRuntimeStatus;
+  autoSaveRestartToken: number;
   lastManualSave: string | null;
   autoSaveError: string | null;
+  lastSaveFailure: SaveFailureInfo | null;
+  saveHealth: ProjectPersistenceHealthSnapshot | null;
+  saveHealthError: string | null;
 
   saveProjectManual: (
     mediaItems: MediaItem[],
@@ -71,7 +215,7 @@ interface ProjectState {
     captions: Caption[],
     captionSettings: CaptionSettings,
     isCaptionsLocked: boolean
-  ) => Promise<void>;
+  ) => Promise<boolean>;
 
   loadProjectFromSlot: (slot: SaveSlot) => Promise<{
     mediaItems: MediaItem[];
@@ -87,12 +231,72 @@ interface ProjectState {
 
   deleteAllSaves: () => Promise<void>;
   deleteAutoSaveOnly: () => Promise<void>;
+  resetSaveDatabase: () => Promise<void>;
   refreshSaveInfo: () => Promise<void>;
+  refreshSaveHealth: (
+    loader?: (() => Promise<ProjectPersistenceHealthSnapshot | null>) | null,
+  ) => Promise<void>;
+  updateAutoSaveRuntime: (params: {
+    status: AutoSaveRuntimeStatus;
+    activityAt?: string | null;
+  }) => void;
+  requestAutoSaveRestart: () => void;
   clearAutoSaveError: () => void;
+  clearLastSaveFailure: () => void;
+  clearSaveHealthError: () => void;
+}
+
+let projectSaveQueue: Promise<void> = Promise.resolve();
+
+function isValidArrayBuffer(value: unknown): value is ArrayBuffer {
+  return Object.prototype.toString.call(value) === '[object ArrayBuffer]';
+}
+
+function enqueueProjectSave<T>(task: () => Promise<T>): Promise<T> {
+  const run = projectSaveQueue.catch(() => undefined).then(task);
+  projectSaveQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+async function readSerializableFileData(params: {
+  file: File;
+  fallbackUrl?: string;
+  kind: 'メディア' | 'BGM' | 'ナレーション';
+}): Promise<ArrayBuffer> {
+  const persistence = getProjectPersistenceAdapter();
+  try {
+    return await persistence.fileToArrayBuffer(params.file);
+  } catch (fileError) {
+    if (params.fallbackUrl) {
+      try {
+        const fallbackData = await persistence.blobUrlToArrayBuffer(params.fallbackUrl);
+        useLogStore.getState().warn('SYSTEM', '保存用ファイル読み込み失敗のためURLフォールバックを使用', {
+          kind: params.kind,
+          fileName: params.file.name,
+          error: getProjectStoreErrorMessage(fileError),
+        });
+        return fallbackData;
+      } catch (fallbackError) {
+        throw new Error(
+          `${params.kind}「${params.file.name}」の読み込みに失敗しました`
+          + ` (file: ${getProjectStoreErrorMessage(fileError)} / url: ${getProjectStoreErrorMessage(fallbackError)})`
+        );
+      }
+    }
+
+    throw new Error(
+      `${params.kind}「${params.file.name}」の読み込みに失敗しました`
+      + ` (${getProjectStoreErrorMessage(fileError)})`
+    );
+  }
 }
 
 async function serializeMediaItem(item: MediaItem): Promise<SerializedMediaItem> {
-  const fileData = await fileToArrayBuffer(item.file);
+  const fileData = isValidArrayBuffer(item.fileData) ? item.fileData : await readSerializableFileData({
+    file: item.file,
+    fallbackUrl: item.url,
+    kind: 'メディア',
+  });
   return {
     id: item.id,
     fileName: item.file.name,
@@ -114,14 +318,17 @@ async function serializeMediaItem(item: MediaItem): Promise<SerializedMediaItem>
     positionY: item.positionY,
     isTransformOpen: item.isTransformOpen,
     isLocked: item.isLocked,
+    sourceWidth: item.sourceWidth,
+    sourceHeight: item.sourceHeight,
   };
 }
 
 function deserializeMediaItem(data: SerializedMediaItem): MediaItem {
-  const file = arrayBufferToFile(data.fileData, data.fileName, data.fileType);
+  const file = getProjectPersistenceAdapter().arrayBufferToFile(data.fileData, data.fileName, data.fileType);
   return {
     id: data.id,
     file,
+    fileData: data.fileData,
     type: data.type,
     url: URL.createObjectURL(file),
     volume: data.volume,
@@ -139,6 +346,8 @@ function deserializeMediaItem(data: SerializedMediaItem): MediaItem {
     positionY: data.positionY,
     isTransformOpen: data.isTransformOpen,
     isLocked: data.isLocked,
+    sourceWidth: data.sourceWidth,
+    sourceHeight: data.sourceHeight,
   };
 }
 
@@ -147,12 +356,16 @@ async function serializeAudioTrack(track: AudioTrack): Promise<SerializedAudioTr
   let blobData: ArrayBuffer | undefined;
 
   if (track.file instanceof File) {
-    fileData = await fileToArrayBuffer(track.file);
+    fileData = await readSerializableFileData({
+      file: track.file,
+      fallbackUrl: track.blobUrl || track.url,
+      kind: 'BGM',
+    });
   }
 
   if (track.blobUrl) {
     try {
-      blobData = await blobUrlToArrayBuffer(track.blobUrl);
+      blobData = await getProjectPersistenceAdapter().blobUrlToArrayBuffer(track.blobUrl);
     } catch {
       // ignore blob fetch errors
     }
@@ -183,7 +396,7 @@ function deserializeAudioTrack(data: SerializedAudioTrack): AudioTrack {
   let blobUrl: string | undefined;
 
   if (data.fileData) {
-    const f = arrayBufferToFile(data.fileData, data.fileName, data.fileType);
+    const f = getProjectPersistenceAdapter().arrayBufferToFile(data.fileData, data.fileName, data.fileType);
     file = f;
     url = URL.createObjectURL(f);
   } else if (data.blobData) {
@@ -217,12 +430,16 @@ async function serializeNarrationClip(clip: NarrationClip): Promise<SerializedNa
   let blobData: ArrayBuffer | undefined;
 
   if (clip.file instanceof File) {
-    fileData = await fileToArrayBuffer(clip.file);
+    fileData = await readSerializableFileData({
+      file: clip.file,
+      fallbackUrl: clip.blobUrl || clip.url,
+      kind: 'ナレーション',
+    });
   }
 
   if (clip.blobUrl) {
     try {
-      blobData = await blobUrlToArrayBuffer(clip.blobUrl);
+      blobData = await getProjectPersistenceAdapter().blobUrlToArrayBuffer(clip.blobUrl);
     } catch {
       // ignore blob fetch errors
     }
@@ -256,7 +473,7 @@ function deserializeNarrationClip(data: SerializedNarrationClip): NarrationClip 
   let blobUrl: string | undefined;
 
   if (data.fileData) {
-    const f = arrayBufferToFile(data.fileData, data.fileName, data.fileType);
+    const f = getProjectPersistenceAdapter().arrayBufferToFile(data.fileData, data.fileName, data.fileType);
     file = f;
     url = URL.createObjectURL(f);
   } else if (data.blobData) {
@@ -351,12 +568,18 @@ function deserializeCaption(data: SerializedCaption): Caption {
 
 export const useProjectStore = create<ProjectState>()(
   devtools(
-    (set) => ({
+    (set, get) => ({
       isSaving: false,
       isLoading: false,
       lastAutoSave: null,
+      lastAutoSaveActivityAt: null,
+      autoSaveRuntimeStatus: 'idle',
+      autoSaveRestartToken: 0,
       lastManualSave: null,
       autoSaveError: null,
+      lastSaveFailure: null,
+      saveHealth: null,
+      saveHealthError: null,
 
       saveProjectManual: async (
         mediaItems,
@@ -369,8 +592,10 @@ export const useProjectStore = create<ProjectState>()(
         captionSettings,
         isCaptionsLocked
       ) => {
+        const operationId = createDiagnosticId('manual-save');
         set({ isSaving: true });
         useLogStore.getState().info('SYSTEM', '手動保存を開始', {
+          operationId,
           mediaCount: mediaItems.length,
           hasBgm: !!bgm,
           narrationCount: narrations.length,
@@ -378,38 +603,60 @@ export const useProjectStore = create<ProjectState>()(
         });
 
         try {
-          const serializedMediaItems = await Promise.all(mediaItems.map(serializeMediaItem));
-          const serializedBgm = bgm ? await serializeAudioTrack(bgm) : null;
-          const serializedNarrations = await Promise.all(narrations.map(serializeNarrationClip));
-          const serializedCaptions = captions.map(serializeCaption);
+          const projectData = await enqueueProjectSave(async () => {
+            const serializedMediaItems = await Promise.all(mediaItems.map(serializeMediaItem));
+            const serializedBgm = bgm ? await serializeAudioTrack(bgm) : null;
+            const serializedNarrations = await Promise.all(narrations.map(serializeNarrationClip));
+            const serializedCaptions = captions.map(serializeCaption);
 
-          const projectData: ProjectData = {
-            slot: 'manual',
-            savedAt: new Date().toISOString(),
-            version: versionData.version,
-            mediaItems: serializedMediaItems,
-            isClipsLocked,
-            bgm: serializedBgm,
-            isBgmLocked,
-            narrations: serializedNarrations,
-            isNarrationLocked,
-            captions: serializedCaptions,
-            captionSettings,
-            isCaptionsLocked,
-          };
+            const nextProjectData: ProjectData = {
+              slot: 'manual',
+              savedAt: new Date().toISOString(),
+              version: versionData.version,
+              mediaItems: serializedMediaItems,
+              isClipsLocked,
+              bgm: serializedBgm,
+              isBgmLocked,
+              narrations: serializedNarrations,
+              isNarrationLocked,
+              captions: serializedCaptions,
+              captionSettings,
+              isCaptionsLocked,
+            };
 
-          await saveProject(projectData);
+            await getProjectPersistenceAdapter().saveProject(nextProjectData);
+            return nextProjectData;
+          });
 
-          useLogStore.getState().info('SYSTEM', '手動保存完了', { savedAt: projectData.savedAt });
+          useLogStore.getState().info('SYSTEM', '手動保存完了', {
+            operationId,
+            savedAt: projectData.savedAt,
+          });
           set({
             lastManualSave: projectData.savedAt,
+            lastAutoSaveActivityAt: projectData.savedAt,
+            autoSaveRuntimeStatus: 'idle',
             isSaving: false,
+            lastSaveFailure: null,
           });
         } catch (error) {
-          useLogStore.getState().error('SYSTEM', '手動保存失敗', {
-            error: getProjectStoreErrorMessage(error),
+          const failureInfo = await buildSaveFailureInfo({
+            operationId,
+            operation: 'manual',
+            error,
+            hasAutoSave: get().lastAutoSave !== null,
+            health: get().saveHealth,
           });
-          set({ isSaving: false });
+          useLogStore.getState().error('SYSTEM', '手動保存失敗', {
+            operationId,
+            category: failureInfo.category,
+            error: failureInfo.reason,
+            recoveryAction: failureInfo.recoveryAction,
+            storageEstimate: failureInfo.storageEstimate,
+            persistenceMode: failureInfo.persistenceMode,
+            launchContext: failureInfo.launchContext,
+          });
+          set({ isSaving: false, lastSaveFailure: failureInfo });
           throw error;
         }
       },
@@ -426,10 +673,13 @@ export const useProjectStore = create<ProjectState>()(
         isCaptionsLocked
       ) => {
         if (mediaItems.length === 0 && !bgm && narrations.length === 0 && captions.length === 0) {
-          return;
+          return false;
         }
 
+        const operationId = createDiagnosticId('auto-save');
+
         useLogStore.getState().debug('SYSTEM', '自動保存を開始', {
+          operationId,
           mediaCount: mediaItems.length,
           hasBgm: !!bgm,
           narrationCount: narrations.length,
@@ -437,46 +687,86 @@ export const useProjectStore = create<ProjectState>()(
         });
 
         try {
-          const serializedMediaItems = await Promise.all(mediaItems.map(serializeMediaItem));
-          const serializedBgm = bgm ? await serializeAudioTrack(bgm) : null;
-          const serializedNarrations = await Promise.all(narrations.map(serializeNarrationClip));
-          const serializedCaptions = captions.map(serializeCaption);
+          const projectData = await enqueueProjectSave(async () => {
+            const serializedMediaItems = await Promise.all(mediaItems.map(serializeMediaItem));
+            const serializedBgm = bgm ? await serializeAudioTrack(bgm) : null;
+            const serializedNarrations = await Promise.all(narrations.map(serializeNarrationClip));
+            const serializedCaptions = captions.map(serializeCaption);
 
-          const projectData: ProjectData = {
-            slot: 'auto',
-            savedAt: new Date().toISOString(),
-            version: versionData.version,
-            mediaItems: serializedMediaItems,
-            isClipsLocked,
-            bgm: serializedBgm,
-            isBgmLocked,
-            narrations: serializedNarrations,
-            isNarrationLocked,
-            captions: serializedCaptions,
-            captionSettings,
-            isCaptionsLocked,
-          };
+            const nextProjectData: ProjectData = {
+              slot: 'auto',
+              savedAt: new Date().toISOString(),
+              version: versionData.version,
+              mediaItems: serializedMediaItems,
+              isClipsLocked,
+              bgm: serializedBgm,
+              isBgmLocked,
+              narrations: serializedNarrations,
+              isNarrationLocked,
+              captions: serializedCaptions,
+              captionSettings,
+              isCaptionsLocked,
+            };
 
-          await saveProject(projectData);
-          useLogStore.getState().debug('SYSTEM', '自動保存完了', { savedAt: projectData.savedAt });
-          set({ lastAutoSave: projectData.savedAt, autoSaveError: null });
+            await getProjectPersistenceAdapter().saveProject(nextProjectData);
+            return nextProjectData;
+          });
+          useLogStore.getState().debug('SYSTEM', '自動保存完了', {
+            operationId,
+            savedAt: projectData.savedAt,
+          });
+          set({
+            lastAutoSave: projectData.savedAt,
+            lastAutoSaveActivityAt: projectData.savedAt,
+            autoSaveRuntimeStatus: 'saved',
+            autoSaveError: null,
+            lastSaveFailure: null,
+          });
+          return true;
         } catch (error) {
+          const failureInfo = await buildSaveFailureInfo({
+            operationId,
+            operation: 'auto',
+            error,
+            hasAutoSave: get().lastAutoSave !== null,
+            health: get().saveHealth,
+          });
           const message = isStorageQuotaError(error)
             ? '保存容量が不足しています。不要な保存データを削除してください'
             : getProjectStoreErrorMessage(error);
-          useLogStore.getState().error('SYSTEM', '自動保存失敗', { error: message });
-          set({ autoSaveError: message });
+          useLogStore.getState().error('SYSTEM', '自動保存失敗', {
+            operationId,
+            category: failureInfo.category,
+            error: message,
+            recoveryAction: failureInfo.recoveryAction,
+            storageEstimate: failureInfo.storageEstimate,
+            persistenceMode: failureInfo.persistenceMode,
+            launchContext: failureInfo.launchContext,
+          });
+          set({
+            autoSaveRuntimeStatus: 'failed',
+            autoSaveError: message,
+            lastSaveFailure: failureInfo,
+          });
+          return false;
         }
       },
 
       loadProjectFromSlot: async (slot) => {
+        const operationId = createDiagnosticId(`load-${slot}`);
         set({ isLoading: true });
-        useLogStore.getState().info('SYSTEM', 'プロジェクトを読み込み中', { slot });
+        useLogStore.getState().info('SYSTEM', 'プロジェクトを読み込み中', {
+          operationId,
+          slot,
+        });
 
         try {
-          const data = await loadProject(slot);
+          const data = await getProjectPersistenceAdapter().loadProject(slot);
           if (!data) {
-            useLogStore.getState().warn('SYSTEM', '読み込み対象のプロジェクトが存在しません', { slot });
+            useLogStore.getState().warn('SYSTEM', '読み込み対象のプロジェクトが存在しません', {
+              operationId,
+              slot,
+            });
             set({ isLoading: false });
             return null;
           }
@@ -489,6 +779,7 @@ export const useProjectStore = create<ProjectState>()(
           const captions = data.captions.map(deserializeCaption);
 
           useLogStore.getState().info('SYSTEM', 'プロジェクト読み込み完了', {
+            operationId,
             slot,
             mediaCount: mediaItems.length,
             hasBgm: !!bgm,
@@ -511,6 +802,7 @@ export const useProjectStore = create<ProjectState>()(
           };
         } catch (error) {
           useLogStore.getState().error('SYSTEM', 'プロジェクト読み込み失敗', {
+            operationId,
             slot,
             error: error instanceof Error ? error.message : String(error),
           });
@@ -521,31 +813,102 @@ export const useProjectStore = create<ProjectState>()(
 
       deleteAllSaves: async () => {
         useLogStore.getState().info('SYSTEM', '全保存データを削除');
-        await deleteAllProjects();
-        set({ lastAutoSave: null, lastManualSave: null });
+        await getProjectPersistenceAdapter().deleteAllProjects();
+        set({
+          lastAutoSave: null,
+          lastAutoSaveActivityAt: null,
+          autoSaveRuntimeStatus: 'idle',
+          lastManualSave: null,
+        });
         useLogStore.getState().info('SYSTEM', '全保存データ削除完了');
       },
 
       deleteAutoSaveOnly: async () => {
         useLogStore.getState().info('SYSTEM', '自動保存データを削除');
-        await deleteProject('auto');
-        set({ lastAutoSave: null });
+        await getProjectPersistenceAdapter().deleteProject('auto');
+        set({
+          lastAutoSave: null,
+          lastAutoSaveActivityAt: null,
+          autoSaveRuntimeStatus: 'idle',
+          lastSaveFailure: null,
+        });
         useLogStore.getState().info('SYSTEM', '自動保存データ削除完了');
       },
 
+      resetSaveDatabase: async () => {
+        useLogStore.getState().warn('SYSTEM', '保存用データベースを初期化');
+        await enqueueProjectSave(async () => {
+          await getProjectPersistenceAdapter().resetProjectDatabase();
+        });
+        set({
+          lastAutoSave: null,
+          lastAutoSaveActivityAt: null,
+          autoSaveRuntimeStatus: 'idle',
+          lastManualSave: null,
+          autoSaveError: null,
+          lastSaveFailure: null,
+        });
+        useLogStore.getState().info('SYSTEM', '保存用データベース初期化完了');
+      },
+
       refreshSaveInfo: async () => {
+        if (useUIStore.getState().isPreviewPlaying) return;
         try {
-          const info = await getProjectsInfo();
-          set({
-            lastAutoSave: info.auto?.savedAt || null,
-            lastManualSave: info.manual?.savedAt || null,
-          });
+          const info = await getProjectPersistenceAdapter().getProjectsInfo();
+          set((state) => ({
+            lastAutoSave: info.auto?.savedAt ?? null,
+            lastAutoSaveActivityAt: state.lastAutoSaveActivityAt ?? (info.auto?.savedAt ?? null),
+            lastManualSave: info.manual?.savedAt ?? null,
+          }));
         } catch {
           // ignore
         }
       },
 
+      refreshSaveHealth: async (loader) => {
+        if (useUIStore.getState().isPreviewPlaying) return;
+        if (!loader) {
+          set({ saveHealth: null, saveHealthError: null });
+          return;
+        }
+
+        const operationId = createDiagnosticId('save-health');
+        try {
+          const health = await loader();
+          set({ saveHealth: health, saveHealthError: null });
+          if (health) {
+            useLogStore.getState().info('SYSTEM', '保存領域診断を更新', {
+              operationId,
+              persistenceMode: health.persistenceMode,
+              launchContext: health.launchContext,
+              storageEstimate: health.storageEstimate,
+              supportsStorageEstimate: health.supportsStorageEstimate,
+              supportsPersistApi: health.supportsPersistApi,
+              warnings: health.warnings,
+            });
+          }
+        } catch (error) {
+          const message = getProjectStoreErrorMessage(error);
+          useLogStore.getState().warn('SYSTEM', '保存領域診断の取得に失敗', {
+            operationId,
+            error: message,
+          });
+          set({ saveHealth: null, saveHealthError: message });
+        }
+      },
+
+      updateAutoSaveRuntime: ({ status, activityAt }) => set((state) => ({
+        autoSaveRuntimeStatus: status,
+        lastAutoSaveActivityAt: activityAt === undefined ? state.lastAutoSaveActivityAt : activityAt,
+      })),
+
+      requestAutoSaveRestart: () => set((state) => ({
+        autoSaveRestartToken: state.autoSaveRestartToken + 1,
+      })),
+
       clearAutoSaveError: () => set({ autoSaveError: null }),
+      clearLastSaveFailure: () => set({ lastSaveFailure: null }),
+      clearSaveHealthError: () => set({ saveHealthError: null }),
     }),
     { name: 'ProjectStore' }
   )

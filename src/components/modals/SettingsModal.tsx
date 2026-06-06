@@ -6,9 +6,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   X, Key, Eye, EyeOff, ExternalLink, CheckCircle, AlertCircle,
-  FileText, Copy, Download, Trash2, CheckCircle2, RefreshCw, CircleHelp, History
+  FileText, Copy, Download, Trash2, CheckCircle2, RefreshCw, CircleHelp, History, SlidersHorizontal
 } from 'lucide-react';
+import type { AppFlavor } from '../../app/resolveAppFlavor';
+import { getAppFlavorBadge } from '../../app/appFlavorUi';
 import { useLogStore } from '../../stores';
+import { useUIStore } from '../../stores/uiStore';
+import { useOfflineModeStore } from '../../stores/offlineModeStore';
 import { useUpdateStore } from '../../stores/updateStore';
 import type { LogEntry } from '../../stores';
 import { useDisableBodyScroll } from '../../hooks/useDisableBodyScroll';
@@ -19,11 +23,70 @@ export const APP_VERSION = versionData.version;
 const APP_RELEASE_HISTORY = versionData.history ?? null;
 
 interface SettingsModalProps {
+  appFlavor: AppFlavor;
   isOpen: boolean;
   onClose: () => void;
 }
 
 const API_KEY_STORAGE_KEY = 'turtle-video-gemini-api-key';
+const PREVIEW_LOG_MODE_STORAGE_KEY = 'preview.log.mode';
+type PreviewLogMode = 'smooth' | 'boundary' | 'detailed';
+
+const PREVIEW_LOG_MODE_OPTIONS: ReadonlyArray<{
+  value: PreviewLogMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: 'smooth',
+    label: '標準',
+    description: '通常確認向け。境界診断ログを抑えて、プレビューへの負荷を最小にします。',
+  },
+  {
+    value: 'boundary',
+    label: '境界診断',
+    description: 'プレビュー再生中のvideo→video 境界前後を記録し、引っかかり原因を分類します。Android実機での映像切替診断に有効です。',
+  },
+  {
+    value: 'detailed',
+    label: '詳細',
+    description: 'タイムライン詳細も記録します。開発調査用で、実機では重くなる場合があります。',
+  },
+];
+
+const readStoredPreviewLogMode = (): PreviewLogMode => {
+  try {
+    const mode = localStorage.getItem(PREVIEW_LOG_MODE_STORAGE_KEY);
+    if (mode === 'boundary' || mode === 'detailed') {
+      return mode;
+    }
+  } catch {
+    // localStorage が使えない環境では既定値に戻す
+  }
+
+  return 'smooth';
+};
+
+const OFFLINE_MODE_ENABLE_CONFIRM_MESSAGE = [
+  'オフラインモードを有効にすると、以後はこの端末内だけで動作します。',
+  '',
+  '以下の機能が使えなくなります。',
+  '・AIナレーション',
+  '・ソフトウェア更新の通知 / 更新確認',
+  '',
+  'このままオフラインモードを有効にしますか？',
+].join('\n');
+
+const SETTINGS_TOGGLE_BUTTON_BASE =
+  'flex min-h-[42px] items-center justify-center rounded-lg border px-4 py-2.5 text-sm font-semibold transition-colors';
+const SETTINGS_OFF_BUTTON_ACTIVE =
+  'border-blue-500/80 bg-blue-600 text-white hover:bg-blue-500';
+const SETTINGS_ON_BUTTON_ACTIVE =
+  'border-amber-400/80 bg-amber-500 text-black hover:bg-amber-400';
+const SETTINGS_TOGGLE_BUTTON_INACTIVE =
+  'border-gray-700 bg-gray-900 text-gray-300 hover:bg-gray-800';
+const SETTINGS_ACTION_BUTTON =
+  'flex min-h-[42px] w-full max-w-[calc(50%-0.25rem)] items-center justify-center rounded-lg border border-blue-500/80 bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:border-gray-700 disabled:bg-gray-800 disabled:text-gray-400';
 
 /**
  * APIキーをlocalStorageから取得
@@ -51,7 +114,7 @@ export function setStoredApiKey(key: string): void {
   }
 }
 
-type TabType = 'apikey' | 'logs';
+type TabType = 'apikey' | 'settings' | 'logs';
 type InfoPanelType = 'help' | 'history' | null;
 
 export function getNextInfoPanel(
@@ -96,23 +159,35 @@ function getLogLevelBg(level: string): string {
  * 設定モーダルコンポーネント
  * APIキーの設定UI + 変更履歴 + ログ表示
  */
-const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
+const SettingsModal: React.FC<SettingsModalProps> = ({ appFlavor, isOpen, onClose }) => {
   const [activeTab, setActiveTab] = useState<TabType>('apikey');
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
   const [activeInfoPanel, setActiveInfoPanel] = useState<InfoPanelType>(null);
+  const onCloseRef = useRef(onClose);
   const activeInfoPanelRef = useRef<InfoPanelType>(null);
   const modalHistoryIdRef = useRef<string | null>(null);
   const closedByPopstateRef = useRef(false);
   const apikeyScrollRef = useRef<HTMLDivElement>(null);
+  const settingsScrollRef = useRef<HTMLDivElement>(null);
   const logContainerRef = useRef<HTMLDivElement>(null);
+  // setCopied(false) を遅延実行するタイマー。アンマウント時に setState 警告を防ぐためにクリーンアップする
+  const copiedResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const touchStartXRef = useRef<number | null>(null);
   const touchStartYRef = useRef<number | null>(null);
   const touchStartScrollTopRef = useRef(0);
   const touchDeltaYRef = useRef(0);
   const swipeCloseEligibleRef = useRef(false);
+  const previewLogModeAtLoadRef = useRef<PreviewLogMode | null>(null);
+
+  // ページロード時点の preview.log.mode を一度だけキャプチャ
+  if (previewLogModeAtLoadRef.current === null) {
+    previewLogModeAtLoadRef.current = readStoredPreviewLogMode();
+  }
+
+  const [previewLogMode, setPreviewLogMode] = useState<PreviewLogMode>('smooth');
 
   const isMobileViewport = () => {
     if (typeof window === 'undefined') return false;
@@ -128,6 +203,15 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
   const clearLogs = useLogStore((s) => s.clearLogs);
   const clearErrorFlag = useLogStore((s) => s.clearErrorFlag);
   const exportLogs = useLogStore((s) => s.exportLogs);
+  const showToast = useUIStore((s) => s.showToast);
+  const offlineMode = useOfflineModeStore((s) => s.offlineMode);
+  const setOfflineMode = useOfflineModeStore((s) => s.setOfflineMode);
+  const checkForUpdate = useUpdateStore((s) => s.checkForUpdate);
+  const clearUpdateSignals = useUpdateStore((s) => s.clearUpdateSignals);
+  const isCheckingForUpdate = useUpdateStore((s) => s.isCheckingForUpdate);
+  const registration = useUpdateStore((s) => s.registration);
+  const queueUpdateCheckAfterRegister = useUpdateStore((s) => s.queueUpdateCheckAfterRegister);
+  const flavorBadge = getAppFlavorBadge(appFlavor);
 
   useEffect(() => {
     if (isOpen) {
@@ -135,13 +219,33 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
       setSaved(false);
       setShowKey(false);
       setCopied(false);
+      if (copiedResetTimerRef.current) {
+        clearTimeout(copiedResetTimerRef.current);
+        copiedResetTimerRef.current = null;
+      }
       setActiveInfoPanel(null);
+      // モーダルを開くたびに localStorage の現在値を反映
+      setPreviewLogMode(readStoredPreviewLogMode());
       // ログタブを開いたらエラーフラグをクリア
       if (activeTab === 'logs') {
         clearErrorFlag();
       }
     }
   }, [isOpen, activeTab, clearErrorFlag]);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  // アンマウント時に copied リセットタイマーをクリアし、setState警告を防ぐ
+  useEffect(() => {
+    return () => {
+      if (copiedResetTimerRef.current) {
+        clearTimeout(copiedResetTimerRef.current);
+        copiedResetTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     activeInfoPanelRef.current = activeInfoPanel;
@@ -168,7 +272,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
         return;
       }
       closedByPopstateRef.current = true;
-      onClose();
+      onCloseRef.current();
     };
 
     window.addEventListener('popstate', handlePopState);
@@ -189,10 +293,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
       modalHistoryIdRef.current = null;
       closedByPopstateRef.current = false;
     };
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   const getActiveScrollTop = () => {
     if (activeTab === 'apikey') return apikeyScrollRef.current?.scrollTop ?? 0;
+    if (activeTab === 'settings') return settingsScrollRef.current?.scrollTop ?? 0;
     return logContainerRef.current?.scrollTop ?? 0;
   };
 
@@ -239,7 +344,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
 
   const handleSheetTouchEnd = () => {
     if (swipeCloseEligibleRef.current && touchDeltaYRef.current > 72) {
-      onClose();
+      onCloseRef.current();
     }
     resetTouchTracking();
   };
@@ -254,9 +359,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
   const handleSave = () => {
     setStoredApiKey(apiKey.trim());
     setSaved(true);
-    setTimeout(() => {
-      onClose();
-    }, 1000);
   };
 
   const handleClear = () => {
@@ -265,10 +367,59 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
     setSaved(false);
   };
 
+  const handlePreviewLogModeChange = (mode: PreviewLogMode) => {
+    try {
+      if (mode === 'smooth') {
+        localStorage.removeItem(PREVIEW_LOG_MODE_STORAGE_KEY);
+      } else {
+        localStorage.setItem(PREVIEW_LOG_MODE_STORAGE_KEY, mode);
+      }
+    } catch {
+      // localStorage が使えない環境では何もしない
+    }
+    setPreviewLogMode(mode);
+  };
+
+  const handleOfflineModeToggle = (enabled: boolean) => {
+    if (enabled === offlineMode) return;
+    if (enabled) {
+      const confirmed = window.confirm(OFFLINE_MODE_ENABLE_CONFIRM_MESSAGE);
+      if (!confirmed) return;
+      setOfflineMode(true);
+      clearUpdateSignals();
+      return;
+    }
+
+    setOfflineMode(false);
+    if (registration) {
+      void checkForUpdate();
+    } else {
+      queueUpdateCheckAfterRegister();
+    }
+  };
+
+  const handleManualUpdateCheck = async () => {
+    if (offlineMode) return;
+    const result = await checkForUpdate();
+    if (result === 'up-to-date') {
+      showToast('更新がありませんでした');
+    }
+  };
+
   const maskApiKey = (key: string): string => {
     if (!key) return '';
     if (key.length <= 8) return '●'.repeat(key.length);
     return key.slice(0, 4) + '●'.repeat(key.length - 8) + key.slice(-4);
+  };
+
+  const scheduleCopiedReset = () => {
+    if (copiedResetTimerRef.current) {
+      clearTimeout(copiedResetTimerRef.current);
+    }
+    copiedResetTimerRef.current = setTimeout(() => {
+      copiedResetTimerRef.current = null;
+      setCopied(false);
+    }, 2000);
   };
 
   const handleCopyLogs = async () => {
@@ -276,7 +427,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
     try {
       await navigator.clipboard.writeText(logsJson);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      scheduleCopiedReset();
     } catch {
       // フォールバック
       const textarea = document.createElement('textarea');
@@ -286,7 +437,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
       document.execCommand('copy');
       document.body.removeChild(textarea);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      scheduleCopiedReset();
     }
   };
 
@@ -373,6 +524,13 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
                 <History className="w-4 h-4" />
               </button>
             )}
+            <span
+              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold tracking-wide ${flavorBadge.className}`}
+              title={flavorBadge.title}
+            >
+              <span className="sm:hidden">{flavorBadge.compactLabel}</span>
+              <span className="hidden sm:inline">{flavorBadge.label}</span>
+            </span>
           </div>
           <button
             onClick={onClose}
@@ -395,6 +553,16 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
           >
             <Key className="w-4 h-4" />
             APIキー
+          </button>
+          <button
+            onClick={() => setActiveTab('settings')}
+            className={`flex-1 py-3 px-2 text-xs font-bold flex items-center justify-center gap-1 transition ${activeTab === 'settings'
+              ? 'text-white border-b-2 border-blue-500 bg-gray-800/50'
+              : 'text-gray-400 hover:text-white hover:bg-gray-800/30'
+              }`}
+          >
+            <SlidersHorizontal className="w-4 h-4" />
+            各種設定
           </button>
           <button
             onClick={() => { setActiveTab('logs'); clearErrorFlag(); }}
@@ -437,6 +605,12 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
                 <p className="text-xs md:text-sm text-orange-100/95 leading-relaxed">
                   ※ Google AI Studio / Gemini API には利用上限（レート制限・日次上限など）があります。一定量の利用を超えると一時的に利用できなくなり、一定時間待ってから再試行が必要です。
                 </p>
+                {offlineMode ? (
+                  <span className="inline-flex items-center gap-1 text-xs md:text-sm text-orange-200/60">
+                    APIキー取得（Google AI Studio）はオフラインモードでは利用できません
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </span>
+                ) : (
                 <a
                   href="https://aistudio.google.com/app/apikey"
                   target="_blank"
@@ -446,6 +620,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
                   APIキー取得（Google AI Studio）
                   <ExternalLink className="w-3.5 h-3.5" />
                 </a>
+                )}
               </div>
             </div>
           )}
@@ -524,6 +699,13 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
               </div>
 
               {/* AI Studio リンク */}
+              {offlineMode && (
+                <div className="flex items-center justify-center gap-2 border border-gray-700 bg-gray-800/80 text-gray-500 py-3 px-4 rounded-lg font-bold">
+                  <ExternalLink className="w-4 h-4" />
+                  Google AI Studio はオフラインモードでは開けません
+                </div>
+              )}
+              {!offlineMode && (
               <a
                 href="https://aistudio.google.com/app/apikey"
                 target="_blank"
@@ -533,6 +715,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
                 <ExternalLink className="w-4 h-4" />
                 Google AI Studio でAPIキーを取得
               </a>
+              )}
 
               {/* APIキー入力 */}
               <div className="space-y-2">
@@ -589,6 +772,114 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
                 >
                   保存
                 </button>
+              </div>
+            </div>
+          ) : activeTab === 'settings' ? (
+            <div ref={settingsScrollRef} className="p-4 space-y-4 overflow-y-auto">
+              <div className="bg-gray-800 rounded-lg p-4 space-y-3">
+                <div className="space-y-1">
+                  <div className="text-sm font-bold text-gray-100">オフラインモード</div>
+                  <p className="text-xs text-gray-300 leading-relaxed">
+                    インターネット接続が必要な機能を使わず、この端末だけで編集します。
+                  </p>
+                  <p className="text-xs text-gray-300 leading-relaxed">
+                    ※ ブラウザやOSレベルですべての通信を遮断するものではありません。
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => handleOfflineModeToggle(false)}
+                    className={`${SETTINGS_TOGGLE_BUTTON_BASE} ${
+                      !offlineMode ? SETTINGS_OFF_BUTTON_ACTIVE : SETTINGS_TOGGLE_BUTTON_INACTIVE
+                    }`}
+                  >
+                    無効
+                  </button>
+                  <button
+                    onClick={() => handleOfflineModeToggle(true)}
+                    className={`${SETTINGS_TOGGLE_BUTTON_BASE} ${
+                      offlineMode ? SETTINGS_ON_BUTTON_ACTIVE : SETTINGS_TOGGLE_BUTTON_INACTIVE
+                    }`}
+                  >
+                    有効
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-gray-800 rounded-lg p-4 space-y-3">
+                <div className="space-y-1">
+                  <div className="text-sm font-bold text-gray-100">ログモード</div>
+                  <p className="text-xs text-gray-300 leading-relaxed">
+                    ログの記録量を調整します。設定変更後は次のプレビュー開始から反映されます。
+                  </p>
+                  <p className="text-xs text-gray-500 leading-relaxed">
+                    ※ すでに再生中の場合は、プレビューを停止して再生し直してください。
+                  </p>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {PREVIEW_LOG_MODE_OPTIONS.map(({ value, label }) => (
+                    <button
+                      key={value}
+                      onClick={() => handlePreviewLogModeChange(value)}
+                      className={`${SETTINGS_TOGGLE_BUTTON_BASE} ${
+                        previewLogMode === value
+                          ? SETTINGS_OFF_BUTTON_ACTIVE
+                          : SETTINGS_TOGGLE_BUTTON_INACTIVE
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <div className="space-y-1.5 text-[11px] leading-relaxed text-gray-400">
+                  {PREVIEW_LOG_MODE_OPTIONS.map(({ value, label, description }) => (
+                    <p
+                      key={value}
+                      className={previewLogMode === value ? 'text-blue-100' : undefined}
+                    >
+                      <span className="font-semibold text-gray-200">{label}</span>
+                      <span className="ml-1">{description}</span>
+                    </p>
+                  ))}
+                </div>
+                {previewLogMode !== (previewLogModeAtLoadRef.current ?? 'smooth') && (
+                  <div className="flex items-center justify-between gap-2 rounded-lg bg-amber-500/10 border border-amber-500/30 px-3 py-2">
+                    <p className="text-xs text-amber-300">
+                      変更は次のプレビュー開始時に反映されます。反映が不安定な場合はリロードしてください。
+                    </p>
+                    <button
+                      onClick={() => window.location.reload()}
+                      className="shrink-0 rounded-md bg-amber-500 px-3 py-1 text-xs font-bold text-black hover:bg-amber-400 transition"
+                    >
+                      リロード
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-gray-800 rounded-lg p-4 space-y-3">
+                <div className="space-y-1">
+                  <div className="text-sm font-bold text-gray-100">ソフトウェア更新の手動確認</div>
+                  <p className="text-xs text-gray-300 leading-relaxed">
+                    手動でタートルビデオのソフトウェア更新を確認します。
+                  </p>
+                </div>
+                <div className="flex justify-center">
+                  <button
+                    onClick={handleManualUpdateCheck}
+                    disabled={isCheckingForUpdate || offlineMode}
+                    className={SETTINGS_ACTION_BUTTON}
+                  >
+                    {isCheckingForUpdate ? (
+                      <span className="inline-flex items-center gap-2">
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        確認中...
+                      </span>
+                    ) : (
+                      '更新を確認'
+                    )}
+                  </button>
+                </div>
               </div>
             </div>
           ) : activeTab === 'logs' ? (
@@ -706,21 +997,25 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
 };
 
 const UpdateStatus: React.FC = () => {
-  const { needRefresh, updateServiceWorker } = useUpdateStore();
+  const needRefresh = useUpdateStore((s) => s.needRefresh);
+  const isApplyingUpdate = useUpdateStore((s) => s.isApplyingUpdate);
+  const updateServiceWorker = useUpdateStore((s) => s.updateServiceWorker);
+  const offlineMode = useOfflineModeStore((s) => s.offlineMode);
 
-  if (!needRefresh) return null;
+  if (offlineMode || (!needRefresh && !isApplyingUpdate)) return null;
 
   return (
     <div className="w-full bg-blue-500/10 border border-blue-500/30 rounded-lg p-2 flex items-center justify-between gap-2">
       <div className="flex items-center gap-2 text-blue-400">
         <RefreshCw className="w-4 h-4 animate-spin-slow" />
-        <span className="text-xs font-bold">新しいバージョンがあります</span>
+        <span className="text-xs font-bold">{isApplyingUpdate ? '更新を適用中です' : '新しいバージョンがあります'}</span>
       </div>
       <button
-        onClick={() => updateServiceWorker(true)}
-        className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded text-xs font-bold transition"
+        onClick={() => void updateServiceWorker(true)}
+        disabled={isApplyingUpdate}
+        className="bg-blue-600 hover:bg-blue-500 disabled:bg-blue-900/60 disabled:text-blue-200/70 text-white px-3 py-1.5 rounded text-xs font-bold transition"
       >
-        更新
+        {isApplyingUpdate ? '更新中...' : '更新'}
       </button>
     </div>
   );

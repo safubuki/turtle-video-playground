@@ -16,36 +16,45 @@ describe('mediaStore', () => {
   });
 
   describe('addMediaItems', () => {
-    it('should add media items from files', () => {
+    it('should add media items from files', async () => {
       const { addMediaItems } = useMediaStore.getState();
-      const file = new File([''], 'test.mp4', { type: 'video/mp4' });
+      const file = new File(['test content'], 'test.mp4', { type: 'video/mp4', lastModified: 123456789 });
       
-      addMediaItems([file]);
+      await addMediaItems([file]);
       
       const { mediaItems } = useMediaStore.getState();
+      const originalData = await new Response(file).arrayBuffer();
       expect(mediaItems).toHaveLength(1);
-      expect(mediaItems[0].file).toBe(file);
+      expect(mediaItems[0].file).not.toBe(file);
+      expect(mediaItems[0].file.name).toBe(file.name);
+      expect(mediaItems[0].file.type).toBe(file.type);
+      expect(mediaItems[0].file.lastModified).toBe(file.lastModified);
+      expect(mediaItems[0].fileData).toBeInstanceOf(ArrayBuffer);
+      await expect(new Response(mediaItems[0].file).arrayBuffer()).resolves.toEqual(
+        originalData
+      );
+      expect(mediaItems[0].fileData?.byteLength).toBe(originalData.byteLength);
       expect(mediaItems[0].type).toBe('video');
     });
 
-    it('should add image files with default duration', () => {
+    it('should add image files with default duration', async () => {
       const { addMediaItems } = useMediaStore.getState();
       const file = new File([''], 'test.jpg', { type: 'image/jpeg' });
       
-      addMediaItems([file]);
+      await addMediaItems([file]);
       
       const { mediaItems } = useMediaStore.getState();
       expect(mediaItems[0].type).toBe('image');
       expect(mediaItems[0].duration).toBe(5); // default image duration
     });
 
-    it('should handle same file added multiple times with unique IDs', () => {
+    it('should handle same file added multiple times with unique IDs', async () => {
       const { addMediaItems } = useMediaStore.getState();
       const file = new File(['test content'], 'same-file.mp4', { type: 'video/mp4' });
       
       // 同じファイルを2回追加
-      addMediaItems([file]);
-      addMediaItems([file]);
+      await addMediaItems([file]);
+      await addMediaItems([file]);
       
       const { mediaItems } = useMediaStore.getState();
       expect(mediaItems).toHaveLength(2);
@@ -55,13 +64,13 @@ describe('mediaStore', () => {
       expect(mediaItems[0].url).not.toBe(mediaItems[1].url);
     });
 
-    it('should handle files with same name added simultaneously', () => {
+    it('should handle files with same name added simultaneously', async () => {
       const { addMediaItems } = useMediaStore.getState();
       const file1 = new File(['content1'], 'duplicate.mp4', { type: 'video/mp4' });
       const file2 = new File(['content2'], 'duplicate.mp4', { type: 'video/mp4' });
       
       // 同じ名前の2つのファイルを同時に追加
-      addMediaItems([file1, file2]);
+      await addMediaItems([file1, file2]);
       
       const { mediaItems } = useMediaStore.getState();
       expect(mediaItems).toHaveLength(2);
@@ -71,11 +80,11 @@ describe('mediaStore', () => {
   });
 
   describe('removeMediaItem', () => {
-    it('should remove an item by id', () => {
+    it('should remove an item by id', async () => {
       const { addMediaItems, removeMediaItem } = useMediaStore.getState();
       const file = new File([''], 'test.mp4', { type: 'video/mp4' });
       
-      addMediaItems([file]);
+      await addMediaItems([file]);
       const { mediaItems: before } = useMediaStore.getState();
       const id = before[0].id;
       

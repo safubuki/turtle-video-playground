@@ -5,6 +5,7 @@
  */
 import { useState, useCallback, useRef } from 'react';
 import type { MediaItem } from '../types';
+import { MAX_CANVAS_WIDTH, MAX_CANVAS_HEIGHT } from '../constants';
 
 /**
  * useMediaItems - メディアアイテムの状態管理と操作ロジックを提供するフック
@@ -119,6 +120,7 @@ export function useMediaItems(): UseMediaItemsReturn {
       if (element.tagName === 'VIDEO') {
         const videoEl = element as HTMLVideoElement;
         const duration = videoEl.duration;
+        const hasValidDimensions = videoEl.videoWidth > 0 && videoEl.videoHeight > 0;
         if (!isNaN(duration) && duration !== Infinity) {
           setMediaItems((prev) =>
             prev.map((v) => {
@@ -133,6 +135,8 @@ export function useMediaItems(): UseMediaItemsReturn {
                   trimStart: newTrimStart,
                   trimEnd: newTrimEnd,
                   duration: newDuration > 0 ? newDuration : duration,
+                  sourceWidth: hasValidDimensions ? videoEl.videoWidth : v.sourceWidth,
+                  sourceHeight: hasValidDimensions ? videoEl.videoHeight : v.sourceHeight,
                 };
               }
               return v;
@@ -201,7 +205,8 @@ export function useMediaItems(): UseMediaItemsReturn {
   const updateMediaPosition = useCallback((id: string, axis: 'x' | 'y', value: string) => {
     let val = parseFloat(value);
     if (isNaN(val)) val = 0;
-    val = Math.min(Math.max(val, -1280), 1280);
+    const limit = axis === 'x' ? MAX_CANVAS_WIDTH : MAX_CANVAS_HEIGHT;
+    val = Math.min(Math.max(val, -limit), limit);
     setMediaItems((prev) =>
       prev.map((v) => {
         if (v.id === id) {

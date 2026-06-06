@@ -5,7 +5,6 @@
  */
 import { useState, useRef, useCallback } from 'react';
 import type { MediaItem, AudioTrack } from '../types';
-import { CANVAS_WIDTH, CANVAS_HEIGHT } from '../constants';
 
 /**
  * usePlayback - 再生制御ロジックを提供するフック
@@ -102,7 +101,7 @@ export function usePlayback(): UsePlaybackReturn {
 
         ctx.globalAlpha = 1.0;
         ctx.fillStyle = '#000000';
-        ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+        ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
         // Preload next video
         if (isActivePlaying && activeIndex !== -1 && activeIndex + 1 < currentItems.length) {
@@ -163,10 +162,10 @@ export function usePlayback(): UsePlaybackReturn {
                 const userX = conf.positionX || 0;
                 const userY = conf.positionY || 0;
 
-                const baseScale = Math.min(CANVAS_WIDTH / elemW, CANVAS_HEIGHT / elemH);
+                const baseScale = Math.min(ctx.canvas.width / elemW, ctx.canvas.height / elemH);
 
                 ctx.save();
-                ctx.translate(CANVAS_WIDTH / 2 + userX, CANVAS_HEIGHT / 2 + userY);
+                ctx.translate(ctx.canvas.width / 2 + userX, ctx.canvas.height / 2 + userY);
                 ctx.scale(baseScale * scaleFactor, baseScale * scaleFactor);
 
                 let alpha = 1.0;

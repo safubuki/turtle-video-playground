@@ -266,7 +266,7 @@ ${pickText(opts.context, '不足・古い・分かりにくい点を記載して
 ${pickText(opts.proposal, '実施するドキュメント変更を記載してください。')}
 
 ## 対象ファイル / 領域
-${bulletList(opts.scope, ['README.md', 'Docs/developer_guide.md'])}
+${bulletList(opts.scope, ['README.md', 'Docs/guides/developer_guide.md'])}
 
 ## 受け入れ条件
 ${checkboxList(opts.acceptance, ['技術的に正確である', '手順が再現可能である', '用語が一貫している'])}

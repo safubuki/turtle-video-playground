@@ -1,0 +1,27 @@
+{
+  "mode": "summary",
+  "input_path": "C:\\Users\\kamep\\Downloads\\modify.mp4",
+  "fps": 30.0,
+  "total_frames": 964,
+  "duration_sec_estimate": 32.13333333333333,
+  "black_threshold": 8.0,
+  "luma_stats": {
+    "min": 75.64060329861111,
+    "max": 154.66770797164352,
+    "mean": 118.20335225488837,
+    "p05": 82.76241818576389,
+    "p50": 122.82055284288194,
+    "p95": 138.95920044849532
+  },
+  "motion_stats": {
+    "sample_count": 963,
+    "min": 0.0,
+    "max": 81.07489776611328,
+    "mean": 13.257874563401229,
+    "p05": 0.01724439449608326,
+    "p50": 15.322721481323242,
+    "p95": 30.47972660064697
+  },
+  "black_frame_count": 0,
+  "black_frame_ratio": 0.0
+}

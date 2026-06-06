@@ -59,6 +59,9 @@ export interface SerializedMediaItem {
   positionY: number;
   isTransformOpen: boolean;
   isLocked: boolean;
+  // ソース動画の解像度（エクスポートキャンバスサイズの動的決定に使用）
+  sourceWidth?: number;
+  sourceHeight?: number;
 }
 
 // 保存されるオーディオトラックのシリアライズ形式
@@ -395,15 +398,56 @@ export async function deleteAllProjects(): Promise<void> {
 }
 
 /**
+ * 保存用IndexedDB全体を初期化
+ */
+export async function resetProjectDatabase(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(DB_NAME);
+
+    request.onsuccess = () => {
+      useLogStore.getState().info('SYSTEM', '保存用IndexedDBを初期化');
+      resolve();
+    };
+
+    request.onerror = () => {
+      const reason = getIdbErrorReason(request.error);
+      useLogStore.getState().error('SYSTEM', '保存用IndexedDBの初期化に失敗', { reason });
+      reject(new Error(`保存用IndexedDBの初期化に失敗しました (${reason})`));
+    };
+
+    request.onblocked = () => {
+      useLogStore.getState().warn('SYSTEM', '保存用IndexedDBの初期化がブロックされました');
+      reject(new Error('保存用IndexedDBの初期化が他タブまたは別接続によりブロックされました'));
+    };
+  });
+}
+
+/**
  * FileをArrayBufferに変換
  */
 export async function fileToArrayBuffer(file: File): Promise<ArrayBuffer> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as ArrayBuffer);
-    reader.onerror = () => reject(new Error('ファイルの読み込みに失敗しました'));
-    reader.readAsArrayBuffer(file);
-  });
+  if (typeof file.arrayBuffer === 'function') {
+    try {
+      return await file.arrayBuffer();
+    } catch {
+      // FileReader / Response fallback below
+    }
+  }
+
+  try {
+    return await new Promise<ArrayBuffer>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as ArrayBuffer);
+      reader.onerror = () => reject(new Error('ファイルの読み込みに失敗しました'));
+      reader.readAsArrayBuffer(file);
+    });
+  } catch {
+    try {
+      return await new Response(file).arrayBuffer();
+    } catch {
+      throw new Error('ファイルの読み込みに失敗しました');
+    }
+  }
 }
 
 /**

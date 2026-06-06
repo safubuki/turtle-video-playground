@@ -1,13 +1,141 @@
-/**
+﻿/**
  * @file useExport.ts
  * @author Turtle Village
  * @description WebCodecs APIとmp4-muxerを使用して、編集内容をMP4ファイルとして書き出すためのカスタムフック。
  */
 import { useState, useRef, useCallback } from 'react';
-import { FPS, EXPORT_VIDEO_BITRATE } from '../constants';
+import { FPS, computeExportVideoBitrate } from '../constants';
+import { useCanvasStore } from '../stores/canvasStore';
 import * as Mp4Muxer from 'mp4-muxer';
-import type { MediaItem, AudioTrack, NarrationClip } from '../types';
+import type { AudioTrack, NarrationClip } from '../types';
 import { useLogStore } from '../stores/logStore';
+import type { PlatformCapabilities } from '../utils/platform';
+import {
+  getExportFrameTiming,
+  resolveExportCanvasFrameBurstCount,
+  resolveExportDuration,
+} from '../utils/exportTimeline';
+import { inspectMp4Durations } from '../utils/mp4Duration';
+import {
+  shouldUseOfflineAudioPreRender,
+  resolveWebCodecsAudioCaptureStrategy,
+} from './export-strategies/exportStrategyResolver';
+import { probeDecodeAudioData } from './export-strategies/decodeAudioProbe';
+import { createDiagnosticId } from '../utils/diagnostics';
+import type {
+  ExportAudioSources,
+  ExportPreparationStep,
+  ExportRecordingResult,
+  ExportSessionDiagnostics,
+  MediaRecorderExportStrategyRunner,
+  PreRenderedRecorderAudioSource,
+  ResolveExportAudioSource,
+  ResolveExportStrategyOrder,
+} from './export-strategies/types';
+
+export type {
+  ExportAudioSources,
+  ExportAudioSourceResolution,
+  ExportPreparationStep,
+  ExportRecordingResult,
+  ExportSessionDiagnostics,
+  MediaRecorderExportStrategyRunner,
+  PreRenderedRecorderAudioSource,
+  ResolveExportAudioSource,
+  ResolveExportStrategyOrder,
+} from './export-strategies/types';
+export {
+  EXPORT_PREPARATION_STEP_LABELS,
+  EXPORT_PREPARATION_TOTAL_STEPS,
+} from './export-strategies/types';
+
+function durationUsToSampleCount(durationUs: number, sampleRate: number): number {
+  return Math.max(0, Math.round((durationUs / 1e6) * sampleRate));
+}
+
+// 現行 pipeline の動画 timescale(57600) と audio sampleRate(48000) では 1ms 未満の丸め差は吸収できる一方、
+// 1ms を超える audio / video / container の尺差は Teams 投稿後の速度異常再発リスクが高いため、
+// export 完了前に明示的に検出する。
+const DURATION_DIFF_THRESHOLD_US = 1000;
+const AUDIO_TRACK_MIN_VOLUME = 0;
+const AUDIO_TRACK_MAX_VOLUME = 2.5;
+
+export function clampAudioTrackVolume(volume: number): number {
+  return Math.max(AUDIO_TRACK_MIN_VOLUME, Math.min(AUDIO_TRACK_MAX_VOLUME, volume));
+}
+
+export function getAudioDecodeCacheKey(file: File): string {
+  return [
+    file.name,
+    file.size,
+    file.lastModified,
+    file.type,
+  ].join(':');
+}
+
+function calculateFinalAudioSampleCount(
+  sampleRate: number,
+  timestampUs: number,
+  numberOfFrames: number,
+  exportDurationUs?: number,
+): number {
+  const currentSampleCount = durationUsToSampleCount(timestampUs, sampleRate) + numberOfFrames;
+  if (typeof exportDurationUs !== 'number' || !Number.isFinite(exportDurationUs)) {
+    return currentSampleCount;
+  }
+
+  const targetSampleCount = durationUsToSampleCount(exportDurationUs, sampleRate);
+  return Math.min(currentSampleCount, targetSampleCount);
+}
+
+async function probeExportBlobUrl(url: string): Promise<{
+  duration: number;
+  videoWidth: number;
+  videoHeight: number;
+}> {
+  const timeoutMs = 10000;
+  const video = document.createElement('video');
+  video.preload = 'metadata';
+  video.src = url;
+
+  try {
+    return await new Promise((resolve, reject) => {
+      const cleanup = () => {
+        window.clearTimeout(timeoutId);
+        video.onloadedmetadata = null;
+        video.onerror = null;
+        video.removeAttribute('src');
+        video.load();
+      };
+      const timeoutId = window.setTimeout(() => {
+        cleanup();
+        reject(new Error('生成動画のmetadata読み込みがタイムアウトしました'));
+      }, timeoutMs);
+
+      video.onloadedmetadata = () => {
+        const metadata = {
+          duration: video.duration,
+          videoWidth: video.videoWidth,
+          videoHeight: video.videoHeight,
+        };
+        cleanup();
+        resolve(metadata);
+      };
+      video.onerror = () => {
+        cleanup();
+        reject(new Error('生成動画のmetadata読み込みに失敗しました'));
+      };
+    });
+  } catch (error) {
+    try {
+      video.removeAttribute('src');
+      video.load();
+    } catch {
+      // ignore
+    }
+    throw error;
+  }
+}
 
 /**
  * useExport - 動画書き出しロジックを提供するフック
@@ -38,60 +166,19 @@ export interface UseExportReturn {
     audioSources?: ExportAudioSources  // iOS Safari: OfflineAudioContext用音声ソース
   ) => void;
   completeExport: () => void; // 正常終了要求（abortせずにflush/finalizeへ進める）
-  stopExport: () => void; // 明示的な停止メソッドを追加
+  stopExport: (options?: { silent?: boolean; reason?: ExportStopReason }) => void; // 明示的な停止メソッドを追加
   clearExportUrl: () => void;
 }
 
-/**
- * エクスポート用の音声ソース情報。
- * iOS Safari の OfflineAudioContext プリレンダリングに使用。
- */
-export interface ExportAudioSources {
-  mediaItems: MediaItem[];
-  bgm: AudioTrack | null;
-  narrations: NarrationClip[];
-  totalDuration: number;
-  /**
-   * 音声プリレンダリング完了時に呼ばれるコールバック。
-   * iOS Safari では音声抽出にリアルタイムで動画再生が必要なため、
-   * エクスポート用の再生ループ（loop）はこのコールバック後に開始する。
-   * 音声プリレンダリングが不要な環境（PC/Android）では即座に呼ばれる。
-   */
-  onAudioPreRenderComplete?: () => void;
-  /**
-   * エクスポート再生ループの現在時刻（秒）を返す。
-   * 映像フレーム供給数をタイムライン進行に追従させるために使用する。
-   */
-  getPlaybackTimeSec?: () => number;
-}
+export type ExportCancelReason = 'none' | 'user' | 'superseded' | 'unmount' | 'error';
+export type ExportStopReason = Exclude<ExportCancelReason, 'none' | 'error'>;
+type ExportPhase = 'idle' | 'preparing' | 'rendering' | 'finalizing' | 'completed' | 'failed' | 'cancelled';
 
-interface MediaRecorderProfile {
-  mimeType: string | null;
-  extension: 'mp4' | 'webm';
-}
-
-function getSupportedMediaRecorderProfile(): MediaRecorderProfile | null {
-  if (typeof MediaRecorder === 'undefined') return null;
-
-  const candidates: MediaRecorderProfile[] = [
-    { mimeType: 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"', extension: 'mp4' },
-    { mimeType: 'video/mp4;codecs="avc1.42E01E,mp4a.40.2"', extension: 'mp4' },
-    { mimeType: 'video/mp4', extension: 'mp4' },
-    { mimeType: 'video/webm; codecs="vp8, opus"', extension: 'webm' },
-    { mimeType: 'video/webm', extension: 'webm' },
-  ];
-
-  for (const candidate of candidates) {
-    try {
-      if (!candidate.mimeType || MediaRecorder.isTypeSupported(candidate.mimeType)) {
-        return candidate;
-      }
-    } catch {
-      // ignore and continue
-    }
-  }
-
-  return null;
+export interface UseExportRuntimeConfig {
+  getPlatformCapabilities: () => PlatformCapabilities;
+  resolveExportStrategyOrder: ResolveExportStrategyOrder;
+  resolveExportAudioSource?: ResolveExportAudioSource;
+  runMediaRecorderStrategy?: MediaRecorderExportStrategyRunner;
 }
 
 /**
@@ -108,15 +195,21 @@ async function extractAudioViaVideoElement(
   duration: number,
   mainCtx: AudioContext,
   signal: AbortSignal,
+  diagnostics?: ExportSessionDiagnostics,
 ): Promise<AudioBuffer | null> {
   const log = useLogStore.getState();
-  log.info('RENDER', '[EXTRACT] 動画音声のリアルタイム抽出を開始', {
+  const toDetails = (details?: Record<string, unknown>) => ({
+    exportSessionId: diagnostics?.exportSessionId,
+    ...(details ?? {}),
+  });
+
+  log.info('RENDER', '[EXTRACT] 動画音声のリアルタイム抽出を開始', toDetails({
     fileName: file.name,
     duration: Math.round(duration * 100) / 100,
     estimatedTimeSec: Math.ceil(duration + 2),
     audioContextState: mainCtx.state,
     sampleRate: mainCtx.sampleRate,
-  });
+  }));
 
   return new Promise<AudioBuffer | null>((resolve) => {
     let resolved = false;
@@ -137,7 +230,7 @@ async function extractAudioViaVideoElement(
 
     let sourceNode: MediaElementAudioSourceNode | null = null;
     let processor: ScriptProcessorNode | null = null;
-    let silentGain: GainNode | null = null;
+    let silentSinkGain: GainNode | null = null;
     let blobUrl: string | null = null;
     const collectedL: Float32Array[] = [];
     const collectedR: Float32Array[] = [];
@@ -151,8 +244,8 @@ async function extractAudioViaVideoElement(
       if (sourceNode) {
         try { sourceNode.disconnect(); } catch { /* ignore */ }
       }
-      if (silentGain) {
-        try { silentGain.disconnect(); } catch { /* ignore */ }
+      if (silentSinkGain) {
+        try { silentSinkGain.disconnect(); } catch { /* ignore */ }
       }
       video.pause();
       video.removeAttribute('src');
@@ -172,11 +265,11 @@ async function extractAudioViaVideoElement(
     // タイムアウト（duration + 5秒のマージン、最低10秒）
     const timeoutMs = Math.max(10000, (duration + 5) * 1000);
     const timeoutId = setTimeout(() => {
-      log.warn('RENDER', '[EXTRACT] タイムアウトで音声キャプチャ終了', {
+      log.warn('RENDER', '[EXTRACT] タイムアウトで音声キャプチャ終了', toDetails({
         timeoutMs,
         totalFrames,
         capturedDuration: Math.round(totalFrames / mainCtx.sampleRate * 100) / 100,
-      });
+      }));
       buildAndResolve();
     }, timeoutMs);
 
@@ -207,13 +300,13 @@ async function extractAudioViaVideoElement(
           if (a > maxAmp) maxAmp = a;
         }
 
-        log.info('RENDER', '[EXTRACT] 音声抽出完了', {
+        log.info('RENDER', '[EXTRACT] 音声抽出完了', toDetails({
           totalFrames,
           durationSec: Math.round(totalFrames / mainCtx.sampleRate * 100) / 100,
           maxAmplitude: Math.round(maxAmp * 10000) / 10000,
           nonZeroSamples: nonZero,
           chunks: collectedL.length,
-        });
+        }));
 
         if (maxAmp < 1e-8) {
           log.warn('RENDER', '[EXTRACT] ⚠️ 抽出音声がほぼ無音です');
@@ -233,13 +326,14 @@ async function extractAudioViaVideoElement(
       // Web Audio ノードの構築
       sourceNode = mainCtx.createMediaElementSource(video);
       processor = mainCtx.createScriptProcessor(4096, 2, 2);
-      silentGain = mainCtx.createGain();
-      // 極小音量（0 にすると iOS Safari がノードを最適化で無効化する恐れ）
-      silentGain.gain.value = 0.00001;
+      silentSinkGain = mainCtx.createGain();
 
       sourceNode.connect(processor);
-      processor.connect(silentGain);
-      silentGain.connect(mainCtx.destination);
+      // ScriptProcessor は実デスティネーションにつながっていないと
+      // onaudioprocess が発火しない環境があるため、無音 gain 経由で destination へつなぐ。
+      processor.connect(silentSinkGain);
+      silentSinkGain.gain.setValueAtTime(0, mainCtx.currentTime);
+      silentSinkGain.connect(mainCtx.destination);
 
       log.info('RENDER', '[EXTRACT] Web Audio パイプライン構築完了');
 
@@ -279,11 +373,11 @@ async function extractAudioViaVideoElement(
 
       // Video イベント
       video.onended = () => {
-        log.info('RENDER', '[EXTRACT] video.onended 発火', {
+        log.info('RENDER', '[EXTRACT] video.onended 発火', toDetails({
           capturedChunks,
           totalFrames,
           capturedDuration: Math.round(totalFrames / mainCtx.sampleRate * 100) / 100,
-        });
+        }));
         // ほんの少し待ってからバッファを構築（最後の onaudioprocess が確実に処理されるため）
         setTimeout(() => buildAndResolve(), 100);
       };
@@ -336,9 +430,16 @@ async function offlineRenderAudio(
   mainCtx: AudioContext,
   sampleRate: number,
   signal: AbortSignal,
+  options?: {
+    diagnostics?: ExportSessionDiagnostics;
+    resolveExportAudioSource?: ResolveExportAudioSource;
+    isIosSafari?: boolean;
+    audioDecodeCache?: Map<string, Promise<AudioBuffer | null>>;
+  },
 ): Promise<AudioBuffer | null> {
   const { mediaItems, bgm, narrations, totalDuration } = sources;
   if (totalDuration <= 0) return null;
+  sources.onPreparationStepChange?.(3);
 
   const log = useLogStore.getState();
   const numberOfChannels = 2;
@@ -346,6 +447,7 @@ async function offlineRenderAudio(
   const length = Math.max(1, Math.round(totalDuration * sampleRate));
 
   log.info('RENDER', 'OfflineAudioContext 音声プリレンダリング開始', {
+    exportSessionId: options?.diagnostics?.exportSessionId,
     totalDuration: Math.round(totalDuration * 100) / 100,
     sampleRate,
     estimatedSizeMB: Math.round((length * numberOfChannels * 4) / 1024 / 1024 * 10) / 10,
@@ -359,61 +461,109 @@ async function offlineRenderAudio(
   // 失敗するため、その場合は <video> 要素経由のリアルタイム抽出にフォールバックする。
   async function decodeAudio(file: File | { name: string }, url: string, mediaDuration?: number): Promise<AudioBuffer | null> {
     const fileName = file instanceof File ? file.name : (file as { name: string }).name;
-    try {
-      let arrayBuffer: ArrayBuffer;
-      if (file instanceof File) {
-        arrayBuffer = await file.arrayBuffer();
-        log.info('RENDER', `[DIAG-DECODE] File.arrayBuffer 取得成功`, {
+    const cacheKey = file instanceof File ? getAudioDecodeCacheKey(file) : null;
+    const decodePromise = (async (): Promise<AudioBuffer | null> => {
+      const resolvedSource = options?.resolveExportAudioSource?.({
+        fileName,
+        mimeType: file instanceof File ? file.type : null,
+      });
+
+      if (resolvedSource) {
+        log.info('RENDER', '[DIAG-AUDIO-SOURCE] 音声ソース分類', {
+          exportSessionId: options?.diagnostics?.exportSessionId,
           fileName,
-          arrayBufferSize: arrayBuffer.byteLength,
-          arrayBufferSizeKB: Math.round(arrayBuffer.byteLength / 1024),
+          strategy: resolvedSource.strategy,
+          reason: resolvedSource.reason,
+          mimeType: resolvedSource.mimeType,
+          extension: resolvedSource.extension,
         });
-      } else {
-        const response = await fetch(url);
-        if (!response.ok) {
-          log.warn('RENDER', `[DIAG-DECODE] fetch 失敗`, {
+      }
+
+      if (resolvedSource?.strategy === 'media-element' && file instanceof File && typeof mediaDuration === 'number') {
+        log.info('RENDER', '[DIAG-DECODE] media element 抽出を優先', {
+          exportSessionId: options?.diagnostics?.exportSessionId,
+          fileName,
+          reason: resolvedSource.reason,
+        });
+        return await extractAudioViaVideoElement(
+          file,
+          url,
+          mediaDuration,
+          mainCtx,
+          signal,
+          options?.diagnostics,
+        );
+      }
+
+      try {
+        let arrayBuffer: ArrayBuffer;
+        if (file instanceof File) {
+          arrayBuffer = await file.arrayBuffer();
+          log.info('RENDER', `[DIAG-DECODE] File.arrayBuffer 取得成功`, {
             fileName,
-            status: response.status,
-            statusText: response.statusText,
+            arrayBufferSize: arrayBuffer.byteLength,
+            arrayBufferSizeKB: Math.round(arrayBuffer.byteLength / 1024),
           });
+        } else {
+          const response = await fetch(url);
+          if (!response.ok) {
+            log.warn('RENDER', `[DIAG-DECODE] fetch 失敗`, {
+              fileName,
+              status: response.status,
+              statusText: response.statusText,
+            });
+            return null;
+          }
+          arrayBuffer = await response.arrayBuffer();
+          log.info('RENDER', `[DIAG-DECODE] fetch + arrayBuffer 取得成功`, {
+            fileName,
+            arrayBufferSize: arrayBuffer.byteLength,
+            arrayBufferSizeKB: Math.round(arrayBuffer.byteLength / 1024),
+          });
+        }
+
+        if (arrayBuffer.byteLength === 0) {
+          log.warn('RENDER', `[DIAG-DECODE] ArrayBuffer が空です`, { fileName });
           return null;
         }
-        arrayBuffer = await response.arrayBuffer();
-        log.info('RENDER', `[DIAG-DECODE] fetch + arrayBuffer 取得成功`, {
+
+        // decodeAudioData は渡されたバッファを detach するため、probe 側でコピーを渡す。
+        log.info('RENDER', `[DIAG-DECODE] decodeAudioData probe 開始`, {
+          exportSessionId: options?.diagnostics?.exportSessionId,
           fileName,
-          arrayBufferSize: arrayBuffer.byteLength,
-          arrayBufferSizeKB: Math.round(arrayBuffer.byteLength / 1024),
+          usingContext: (mainCtx as { constructor?: { name?: string } }).constructor?.name || 'unknown',
+          contextState: (mainCtx as AudioContext).state || 'N/A',
+          bufferSize: arrayBuffer.byteLength,
+        });
+        const decodeProbe = await probeDecodeAudioData({
+          audioContext: mainCtx,
+          arrayBuffer,
+          fileName,
+          mimeType: file instanceof File ? file.type || null : null,
+          extension: resolvedSource?.extension ?? null,
+        });
+
+        if (decodeProbe.audioBuffer) {
+          log.info('RENDER', `[DIAG-DECODE] 音声デコード成功`, {
+            exportSessionId: options?.diagnostics?.exportSessionId,
+            ...decodeProbe.result,
+            duration: Math.round(decodeProbe.audioBuffer.duration * 100) / 100,
+            channels: decodeProbe.audioBuffer.numberOfChannels,
+          });
+          return decodeProbe.audioBuffer;
+        }
+
+        log.warn('RENDER', `[DIAG-DECODE] decodeAudioData probe 失敗`, {
+          exportSessionId: options?.diagnostics?.exportSessionId,
+          ...decodeProbe.result,
+        });
+      } catch (e) {
+        log.warn('RENDER', `[DIAG-DECODE] decodeAudioData 失敗`, {
+          fileName,
+          error: e instanceof Error ? e.message : String(e),
+          errorName: e instanceof Error ? e.name : 'unknown',
         });
       }
-
-      if (arrayBuffer.byteLength === 0) {
-        log.warn('RENDER', `[DIAG-DECODE] ArrayBuffer が空です`, { fileName });
-        return null;
-      }
-
-      // decodeAudioData は渡されたバッファを detach するため、コピーを渡す
-      // メインctxで再生時に動作実績のある decodeAudioData を使用
-      log.info('RENDER', `[DIAG-DECODE] decodeAudioData 呼び出し開始`, {
-        fileName,
-        usingContext: (mainCtx as any).constructor?.name || 'unknown',
-        contextState: (mainCtx as any).state || 'N/A',
-        bufferSize: arrayBuffer.byteLength,
-      });
-      const decoded = await mainCtx.decodeAudioData(arrayBuffer.slice(0));
-      log.info('RENDER', `[DIAG-DECODE] 音声デコード成功`, {
-        fileName,
-        duration: Math.round(decoded.duration * 100) / 100,
-        channels: decoded.numberOfChannels,
-        sampleRate: decoded.sampleRate,
-        length: decoded.length,
-      });
-      return decoded;
-    } catch (e) {
-      log.warn('RENDER', `[DIAG-DECODE] decodeAudioData 失敗`, {
-        fileName,
-        error: e instanceof Error ? e.message : String(e),
-        errorName: e instanceof Error ? e.name : 'unknown',
-      });
 
       // iOS Safari: ビデオコンテナ(.mov/.mp4)の decodeAudioData が
       // "EncodingError: Decoding failed" で失敗する場合、
@@ -423,17 +573,40 @@ async function offlineRenderAudio(
           /\.(mov|mp4|m4v|webm)$/i.test(fileName);
         if (isVideoFile && !signal.aborted) {
           log.info('RENDER', '[DIAG-DECODE] ビデオファイルのため <video> 経由のリアルタイム抽出にフォールバック', {
+            exportSessionId: options?.diagnostics?.exportSessionId,
             fileName,
             fileType: file.type,
             mediaDuration: mediaDuration || 'unknown',
           });
           return await extractAudioViaVideoElement(
-            file, url, mediaDuration || 30, mainCtx, signal
+            file,
+            url,
+            mediaDuration || 30,
+            mainCtx,
+            signal,
+            options?.diagnostics,
           );
         }
       }
+
       return null;
+    })();
+
+    if (!cacheKey || !options?.audioDecodeCache) {
+      return decodePromise;
     }
+
+    const cachedPromise = options.audioDecodeCache.get(cacheKey);
+    if (cachedPromise) {
+      log.info('RENDER', '[DIAG-DECODE] 既存 decode 結果を再利用', {
+        exportSessionId: options?.diagnostics?.exportSessionId,
+        fileName,
+      });
+      return await cachedPromise;
+    }
+
+    options.audioDecodeCache.set(cacheKey, decodePromise);
+    return await decodePromise;
   }
 
   let scheduledSources = 0;
@@ -518,7 +691,7 @@ async function offlineRenderAudio(
     source.connect(gain);
     gain.connect(offlineCtx.destination);
 
-    const vol = track.volume;
+    const vol = clampAudioTrackVolume(track.volume);
     const trackStart = Math.max(0, track.delay);
     const sourceOffset = track.startPoint;
     const availableDuration = track.duration - track.startPoint;
@@ -552,7 +725,10 @@ async function offlineRenderAudio(
   }
 
   // 2. BGM
-  if (bgm) await scheduleAudioTrack(bgm, 'BGM');
+  sources.onPreparationStepChange?.(4);
+  if (bgm) {
+    await scheduleAudioTrack(bgm, 'BGM');
+  }
   // 3. Narrations
   async function scheduleNarrationClip(clip: NarrationClip): Promise<void> {
     if (signal.aborted) return;
@@ -589,15 +765,18 @@ async function offlineRenderAudio(
       return a.clip.startTime - b.clip.startTime;
     });
 
+  sources.onPreparationStepChange?.(5);
   for (const entry of orderedNarrations) {
     await scheduleNarrationClip(entry.clip);
   }
 
   if (signal.aborted) return null;
 
+  sources.onPreparationStepChange?.(6);
   log.info('RENDER', 'OfflineAudioContext レンダリング実行', { scheduledSources });
 
   try {
+    sources.onPreparationStepChange?.(7);
     const renderedBuffer = await offlineCtx.startRendering();
 
     // 診断: レンダリング結果の振幅チェック（iOS Safari でデコード失敗時にゼロバッファになる）
@@ -638,19 +817,32 @@ async function offlineRenderAudio(
  * f32-planar 形式を使用（AudioBuffer のネイティブ形式であり、
  * iOS Safari の AudioEncoder との互換性が高い）。
  */
+interface FeedPreRenderedAudioResult {
+  encodedChunks: number;
+  encodedSamples: number;
+  sourceSamplesUsed: number;
+  trimmedSamples: number;
+}
+
+interface FinalizeAudioForExportResult {
+  paddedChunks: number;
+  paddedSamples: number;
+  finalSampleCount: number;
+}
+
 function feedPreRenderedAudio(
   renderedAudio: AudioBuffer,
   audioEncoder: AudioEncoder,
   signal: AbortSignal,
-  maxDurationSec?: number,
-): number {
+  exportDurationUs?: number,
+): FeedPreRenderedAudioResult {
   const log = useLogStore.getState();
   const chunkSize = 4096;
   let audioOffset = 0;
-  const maxSamplesFromDuration = (typeof maxDurationSec === 'number' && Number.isFinite(maxDurationSec))
-    ? Math.max(1, Math.round(maxDurationSec * renderedAudio.sampleRate))
+  const targetSamples = (typeof exportDurationUs === 'number' && Number.isFinite(exportDurationUs))
+    ? durationUsToSampleCount(exportDurationUs, renderedAudio.sampleRate)
     : renderedAudio.length;
-  const totalSamples = Math.min(renderedAudio.length, maxSamplesFromDuration);
+  const totalSamples = Math.min(renderedAudio.length, targetSamples);
   let audioTimestamp = 0;
   let encodedChunks = 0;
   const ch0 = renderedAudio.getChannelData(0);
@@ -669,6 +861,8 @@ function feedPreRenderedAudio(
   }
   log.info('RENDER', 'feedPreRenderedAudio 入力診断', {
     totalSamples,
+    targetSamples,
+    sourceSamples: renderedAudio.length,
     inputMaxAmplitude: Math.round(inputMaxAmp * 10000) / 10000,
     sampleRate: renderedAudio.sampleRate,
     channels: renderedAudio.numberOfChannels,
@@ -717,31 +911,245 @@ function feedPreRenderedAudio(
     totalChunks: Math.ceil(totalSamples / chunkSize),
     encodedChunks,
     totalSamples,
+    sourceSamplesUsed: totalSamples,
+    trimmedSamples: Math.max(0, renderedAudio.length - totalSamples),
     format: 'f32-planar',
     encodeQueueSize: audioEncoder.encodeQueueSize,
   });
 
-  return encodedChunks;
+  return {
+    encodedChunks,
+    encodedSamples: totalSamples,
+    sourceSamplesUsed: totalSamples,
+    trimmedSamples: Math.max(0, renderedAudio.length - totalSamples),
+  };
 }
 
-export function useExport(): UseExportReturn {
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [exportUrl, setExportUrl] = useState<string | null>(null);
-  const [exportExt, setExportExt] = useState<string | null>(null);
+function finalizeAudioForExport(
+  audioEncoder: AudioEncoder,
+  sampleRate: number,
+  signal: AbortSignal,
+  currentSampleCount: number,
+  exportDurationUs?: number,
+): FinalizeAudioForExportResult {
+  const log = useLogStore.getState();
+  const chunkSize = 4096;
+  const targetSampleCount = (typeof exportDurationUs === 'number' && Number.isFinite(exportDurationUs))
+    ? durationUsToSampleCount(exportDurationUs, sampleRate)
+    : currentSampleCount;
+  const paddedSamples = Math.max(0, targetSampleCount - currentSampleCount);
+  let paddedChunks = 0;
+  let offset = 0;
 
-  // 内部状態管理用
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const videoReaderRef = useRef<ReadableStreamDefaultReader<VideoFrame> | null>(null);
-  const audioReaderRef = useRef<ReadableStreamDefaultReader<AudioData> | null>(null);
-  const completionRequestedRef = useRef(false);
+  while (offset < paddedSamples && !signal.aborted && audioEncoder.state === 'configured') {
+    const framesToProcess = Math.min(chunkSize, paddedSamples - offset);
+    const planarData = new Float32Array(framesToProcess * 2);
+    const timestampSamples = currentSampleCount + offset;
+    const timestampUs = Math.round((timestampSamples / sampleRate) * 1e6);
+    const audioData = new AudioData({
+      format: 'f32-planar' as AudioSampleFormat,
+      sampleRate,
+      numberOfFrames: framesToProcess,
+      numberOfChannels: 2,
+      timestamp: timestampUs,
+      data: planarData,
+    });
+    audioEncoder.encode(audioData);
+    audioData.close();
+    paddedChunks++;
+    offset += framesToProcess;
+  }
 
-  // 互換性維持のためのダミーRef（実際には使用しない）
-  const recorderRef = useRef<MediaRecorder | null>(null);
+  log.info('RENDER', 'finalizeAudioForExport 完了', {
+    currentSampleCount,
+    targetSampleCount,
+    paddedSamples,
+    paddedChunks,
+    sampleRate,
+    encodeQueueSize: audioEncoder.encodeQueueSize,
+  });
+
+  return {
+    paddedChunks,
+    paddedSamples,
+    finalSampleCount: targetSampleCount,
+  };
+}
+
+function createPreRenderedRecorderAudioSource(
+  renderedAudio: AudioBuffer,
+  audioContext: AudioContext,
+): PreRenderedRecorderAudioSource {
+  const log = useLogStore.getState();
+  const source = audioContext.createBufferSource();
+  const outputGain = audioContext.createGain();
+  const streamDest = audioContext.createMediaStreamDestination();
+  let keepAliveOscillator: OscillatorNode | null = null;
+  let keepAliveGain: GainNode | null = null;
+  let started = false;
+  let cleaned = false;
+
+  source.buffer = renderedAudio;
+  outputGain.gain.setValueAtTime(1, audioContext.currentTime);
+  source.connect(outputGain);
+  outputGain.connect(streamDest);
+
+  try {
+    keepAliveOscillator = audioContext.createOscillator();
+    keepAliveGain = audioContext.createGain();
+    keepAliveOscillator.frequency.value = 440;
+    keepAliveGain.gain.setValueAtTime(0.00001, audioContext.currentTime);
+    keepAliveOscillator.connect(keepAliveGain);
+    keepAliveGain.connect(streamDest);
+    keepAliveOscillator.start();
+  } catch (err) {
+    keepAliveOscillator = null;
+    keepAliveGain = null;
+    log.warn('RENDER', 'プリレンダ音声の keep-alive 作成に失敗', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    try {
+      source.stop();
+    } catch {
+      // ignore
+    }
+    try {
+      source.disconnect();
+    } catch {
+      // ignore
+    }
+    try {
+      outputGain.disconnect();
+    } catch {
+      // ignore
+    }
+    if (keepAliveOscillator) {
+      try {
+        keepAliveOscillator.stop();
+      } catch {
+        // ignore
+      }
+      try {
+        keepAliveOscillator.disconnect();
+      } catch {
+        // ignore
+      }
+      keepAliveOscillator = null;
+    }
+    if (keepAliveGain) {
+      try {
+        keepAliveGain.disconnect();
+      } catch {
+        // ignore
+      }
+      keepAliveGain = null;
+    }
+    streamDest.stream.getTracks().forEach((track) => {
+      try {
+        track.stop();
+      } catch {
+        // ignore
+      }
+    });
+  };
+
+  return {
+    stream: streamDest.stream,
+    startPlayback: () => {
+      if (started) return;
+      started = true;
+      if ((audioContext.state as AudioContextState | 'interrupted') !== 'running') {
+        audioContext.resume().catch(() => { });
+      }
+      source.start();
+      log.info('RENDER', 'プリレンダ音声ストリームの再生を開始', {
+        duration: Math.round(renderedAudio.duration * 100) / 100,
+        sampleRate: renderedAudio.sampleRate,
+      });
+    },
+    cleanup,
+  };
+}
+
+export function createUseExport(config: UseExportRuntimeConfig) {
+  return function useExport(): UseExportReturn {
+    const [isProcessing, setIsProcessing] = useState(false);
+    const [exportUrl, setExportUrl] = useState<string | null>(null);
+    const [exportExt, setExportExt] = useState<string | null>(null);
+
+    // 内部状態管理用
+    const abortControllerRef = useRef<AbortController | null>(null);
+    const videoReaderRef = useRef<ReadableStreamDefaultReader<VideoFrame> | null>(null);
+    const audioReaderRef = useRef<ReadableStreamDefaultReader<AudioData> | null>(null);
+    const completionRequestedRef = useRef(false);
+    const silentAbortRef = useRef(false);
+    const finalizeRequestedRef = useRef(false);
+    const exportFinalizingRef = useRef(false);
+    const exportSessionIdRef = useRef<string | null>(null);
+    const exportCancelReasonRef = useRef<ExportCancelReason>('none');
+    const exportCompletedRef = useRef(false);
+    const exportPhaseRef = useRef<ExportPhase>('idle');
+
+    // 互換性維持のためのダミーRef（実際には使用しない）
+    const recorderRef = useRef<MediaRecorder | null>(null);
+    const updatePreparationStep = useCallback(
+      (audioSources: ExportAudioSources | undefined, step: ExportPreparationStep) => {
+        audioSources?.onPreparationStepChange?.(step);
+      },
+      []
+    );
 
   // エクスポート停止処理
-  const stopExport = useCallback(() => {
-    useLogStore.getState().info('RENDER', 'エクスポートを停止');
+  const stopExport = useCallback((options?: { silent?: boolean; reason?: ExportStopReason }) => {
+    // reason 未指定の stopExport は preview/export cleanup 側からの system stop とみなす。
+    const cancelReason = options?.reason ?? 'superseded';
+    const currentPhase = exportPhaseRef.current;
+    // natural end -> reader cancel -> finalize までの間は ref 更新の瞬間差があるため、
+    // phase だけでなく completion/finalize 系 ref も合わせて見て「成功へ向かう終端処理中」を判定する。
+    const isNaturalFinalizeInFlight =
+      completionRequestedRef.current
+      || finalizeRequestedRef.current
+      || exportFinalizingRef.current
+      || currentPhase === 'finalizing';
+    if (currentPhase === 'completed') {
+      return;
+    }
+    if (cancelReason === 'user' && isNaturalFinalizeInFlight) {
+      useLogStore.getState().info('RENDER', '[EXPORT-FSM] transition', {
+        exportSessionId: exportSessionIdRef.current,
+        from: currentPhase,
+        to: currentPhase,
+        reason: 'cancel requested',
+        cancelReason: exportCancelReasonRef.current,
+        hasExportUrl: Boolean(exportUrl),
+      });
+      return;
+    }
+    useLogStore.getState().info(
+      'RENDER',
+      cancelReason === 'user' ? 'エクスポートを停止' : 'エクスポートを中断',
+      { cancelReason },
+    );
+    const previousPhase = exportPhaseRef.current;
     completionRequestedRef.current = false;
+    finalizeRequestedRef.current = false;
+    exportFinalizingRef.current = false;
+    exportCancelReasonRef.current = cancelReason;
+    exportPhaseRef.current = 'cancelled';
+    useLogStore.getState().info('RENDER', '[EXPORT-FSM] transition', {
+      exportSessionId: exportSessionIdRef.current,
+      from: previousPhase,
+      to: 'cancelled',
+      reason: 'cancel requested',
+      cancelReason,
+      hasExportUrl: Boolean(exportUrl),
+    });
+    silentAbortRef.current = options?.silent === true;
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
@@ -756,12 +1164,25 @@ export function useExport(): UseExportReturn {
       audioReaderRef.current = null;
     }
     setIsProcessing(false);
-  }, []);
+  }, [exportUrl]);
 
   // 正常終了要求（abortではなく、読み取りループを自然終了させる）
   const completeExport = useCallback(() => {
     useLogStore.getState().info('RENDER', 'エクスポートの正常終了を要求');
+    const previousPhase = exportPhaseRef.current;
     completionRequestedRef.current = true;
+    finalizeRequestedRef.current = true;
+    exportFinalizingRef.current = true;
+    exportCancelReasonRef.current = 'none';
+    exportPhaseRef.current = 'finalizing';
+    useLogStore.getState().info('RENDER', '[EXPORT-FSM] transition', {
+      exportSessionId: exportSessionIdRef.current,
+      from: previousPhase,
+      to: 'finalizing',
+      reason: 'natural end reached',
+      cancelReason: 'none',
+      hasExportUrl: Boolean(exportUrl),
+    });
     if (videoReaderRef.current) {
       videoReaderRef.current.cancel().catch(() => { });
       videoReaderRef.current = null;
@@ -770,7 +1191,7 @@ export function useExport(): UseExportReturn {
       audioReaderRef.current.cancel().catch(() => { });
       audioReaderRef.current = null;
     }
-  }, []);
+  }, [exportUrl]);
 
   // エクスポート開始
   const startExport = useCallback(
@@ -781,37 +1202,166 @@ export function useExport(): UseExportReturn {
       onRecordingError?: (message: string) => void,
       audioSources?: ExportAudioSources
     ) => {
+      const exportSessionId = createDiagnosticId('export');
+      exportSessionIdRef.current = exportSessionId;
+      const log = useLogStore.getState();
+      const logInfo = (message: string, details?: Record<string, unknown>) => {
+        log.info('RENDER', message, { exportSessionId, ...(details ?? {}) });
+      };
+      const logWarn = (message: string, details?: Record<string, unknown>) => {
+        log.warn('RENDER', message, { exportSessionId, ...(details ?? {}) });
+      };
+      const logError = (message: string, details?: Record<string, unknown>) => {
+        log.error('RENDER', message, { exportSessionId, ...(details ?? {}) });
+      };
+
       if (!canvasRef.current || !masterDestRef.current) {
         onRecordingError?.('エクスポートの初期化に失敗しました。');
         return;
       }
 
-      useLogStore.getState().info('RENDER', 'エクスポートを開始', {
-        width: canvasRef.current.width,
-        height: canvasRef.current.height,
+      logInfo('エクスポートを開始', {
+        previewWidth: canvasRef.current.width,
+        previewHeight: canvasRef.current.height,
         fps: FPS,
-        bitrate: EXPORT_VIDEO_BITRATE
+      });
+      exportPhaseRef.current = 'preparing';
+      logInfo('[EXPORT-FSM] transition', {
+        from: 'idle',
+        to: 'preparing',
+        reason: 'export start',
+        cancelReason: 'none',
+        hasExportUrl: Boolean(exportUrl),
       });
       setIsProcessing(true);
-      setExportUrl(null);
+      setExportUrl((previousUrl) => {
+        if (previousUrl) {
+          URL.revokeObjectURL(previousUrl);
+        }
+        return null;
+      });
       setExportExt(null);
       completionRequestedRef.current = false;
+      finalizeRequestedRef.current = false;
+      exportFinalizingRef.current = false;
+      exportCancelReasonRef.current = 'none';
+      exportCompletedRef.current = false;
+      silentAbortRef.current = false;
+      updatePreparationStep(audioSources, 1);
+      logInfo('[EXPORT-FSM] transition', {
+        from: 'preparing',
+        to: 'preparing',
+        reason: 'audio prepared',
+        cancelReason: exportCancelReasonRef.current,
+        hasExportUrl: Boolean(exportUrl),
+      });
+      const audioDecodeCache = new Map<string, Promise<AudioBuffer | null>>();
+      let hasNotifiedRecordingStop = false;
+      const notifyRecordingStop = (url: string, ext: string, result?: ExportRecordingResult) => {
+        if (hasNotifiedRecordingStop) return false;
+        const hasPositiveBlob =
+          typeof result?.blobSizeBytes === 'number'
+            ? result.blobSizeBytes > 0
+            : true;
+        const hasDownloadableResult = Boolean(url && ext && hasPositiveBlob);
+        const isConfirmedMediaRecorderCompletion =
+          hasDownloadableResult
+          && result?.source === 'media-recorder'
+          && result.signalAborted === false;
+        if (!hasDownloadableResult) {
+          logWarn('[EXPORT-FSM] transition', {
+            exportSessionId,
+            from: exportPhaseRef.current,
+            to: exportPhaseRef.current,
+            reason: 'callback suppressed - result is not downloadable',
+            cancelReason: exportCancelReasonRef.current,
+            hasExportUrl: Boolean(exportUrl),
+            hasDownloadableResult,
+            recordingResult: result ?? null,
+          });
+          return false;
+        }
+        if (exportCancelReasonRef.current === 'user') {
+          const playbackTimeSec = audioSources?.getPlaybackTimeSec?.();
+          const isAtNaturalEnd =
+            hasDownloadableResult
+            && typeof playbackTimeSec === 'number'
+            && Number.isFinite(playbackTimeSec)
+            && Number.isFinite(audioSources?.totalDuration)
+            && (audioSources?.totalDuration ?? 0) > 0
+            && playbackTimeSec >= (audioSources?.totalDuration ?? 0) - 0.1;
+
+          if (!isAtNaturalEnd && !isConfirmedMediaRecorderCompletion) {
+            logWarn('[EXPORT-FSM] transition', {
+              exportSessionId,
+              from: exportPhaseRef.current,
+              to: exportPhaseRef.current,
+              reason: 'callback suppressed',
+              cancelReason: exportCancelReasonRef.current,
+              hasExportUrl: Boolean(exportUrl),
+              hasDownloadableResult,
+              recordingResult: result ?? null,
+            });
+            return false;
+          }
+
+          logWarn('[EXPORT-FSM] transition', {
+            exportSessionId,
+            from: exportPhaseRef.current,
+            to: exportPhaseRef.current,
+            reason: isConfirmedMediaRecorderCompletion
+              ? 'recovered stale user-cancel after confirmed MediaRecorder completion'
+              : 'recovered stale user-cancel after natural end',
+            cancelReason: exportCancelReasonRef.current,
+            hasExportUrl: Boolean(exportUrl),
+            hasDownloadableResult,
+            playbackTimeSec,
+            totalDuration: audioSources?.totalDuration,
+            recordingResult: result ?? null,
+          });
+          exportCancelReasonRef.current = 'none';
+        }
+        hasNotifiedRecordingStop = true;
+        const previousPhase = exportPhaseRef.current;
+        exportPhaseRef.current = 'completed';
+        exportCompletedRef.current = true;
+        logInfo('[EXPORT-FSM] transition', {
+          from: previousPhase,
+          to: 'completed',
+          reason: 'callback invoked',
+          cancelReason: exportCancelReasonRef.current,
+          hasExportUrl: hasDownloadableResult,
+        });
+        onRecordingStop(url, ext);
+        return true;
+      };
 
       const canvas = canvasRef.current;
       const width = canvas.width;
       const height = canvas.height;
       const audioContext = masterDestRef.current.context;
       const audioTrack = masterDestRef.current.stream.getAudioTracks()[0] || null;
-      const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : '';
-      const isIOS = /iP(hone|ad|od)/i.test(userAgent) ||
-        (typeof navigator !== 'undefined' && navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-      const isSafari = /Safari/i.test(userAgent) && !/CriOS|FxiOS|EdgiOS|OPiOS|DuckDuckGo/i.test(userAgent);
-      const isIosSafari = isIOS && isSafari;
+      const hasLiveAudioTrack = !!audioTrack && audioTrack.readyState === 'live';
+      const platformCapabilities = config.getPlatformCapabilities();
+      const {
+        userAgent,
+        isIOS,
+        isSafari,
+        isIosSafari,
+        supportsTrackProcessor: canUseTrackProcessor,
+        supportedMediaRecorderProfile,
+        trackProcessorCtor,
+      } = platformCapabilities;
 
       // ============================================================
+      const resolvedExportDuration = audioSources
+        ? resolveExportDuration(audioSources.totalDuration, FPS)
+        : null;
+      updatePreparationStep(audioSources, 2);
+
       // [DIAG-1] プラットフォーム検出・入力情報の診断ログ
       // ============================================================
-      useLogStore.getState().info('RENDER', '[DIAG-1] プラットフォーム・入力診断', {
+      logInfo('[DIAG-1] プラットフォーム・入力診断', {
         isIOS,
         isSafari,
         isIosSafari,
@@ -819,6 +1369,8 @@ export function useExport(): UseExportReturn {
         platform: typeof navigator !== 'undefined' ? navigator.platform : 'N/A',
         maxTouchPoints: typeof navigator !== 'undefined' ? navigator.maxTouchPoints : -1,
         hasAudioTrack: !!audioTrack,
+        hasLiveAudioTrack,
+        audioTrackReadyState: audioTrack?.readyState ?? 'none',
         audioContextState: (audioContext as AudioContext).state,
         audioContextSampleRate: audioContext.sampleRate,
         hasAudioSources: !!audioSources,
@@ -828,13 +1380,21 @@ export function useExport(): UseExportReturn {
           hasBgm: !!audioSources.bgm,
           narrationCount: audioSources.narrations.length,
           totalDuration: Math.round(audioSources.totalDuration * 100) / 100,
+          exportDurationSec: resolvedExportDuration
+            ? Math.round(resolvedExportDuration.exportDurationSec * 1000) / 1000
+            : null,
+          exportDurationUs: resolvedExportDuration?.exportDurationUs ?? null,
+          alignedDurationSec: resolvedExportDuration
+            ? Math.round(resolvedExportDuration.alignedDurationSec * 1000) / 1000
+            : null,
+          alignedFrameCount: resolvedExportDuration?.frameCount ?? null,
         } : null,
       });
 
       // [DIAG-1b] 全MediaItemの詳細一覧
       if (audioSources && isIosSafari) {
         audioSources.mediaItems.forEach((item, idx) => {
-          useLogStore.getState().info('RENDER', `[DIAG-1b] MediaItem[${idx}]`, {
+          logInfo(`[DIAG-1b] MediaItem[${idx}]`, {
             type: item.type,
             name: item.file instanceof File ? item.file.name : '(not File)',
             hasFile: item.file instanceof File,
@@ -849,35 +1409,34 @@ export function useExport(): UseExportReturn {
         });
       }
 
-      type TrackProcessorConstructor = new (init: { track: MediaStreamTrack }) => {
-        readable: ReadableStream<VideoFrame | AudioData>;
-      };
-      const TrackProcessor = (
-        window as typeof window & { MediaStreamTrackProcessor?: TrackProcessorConstructor }
-      ).MediaStreamTrackProcessor;
-      const canUseTrackProcessor = typeof TrackProcessor === 'function';
       // 映像経路は安定性優先で常に Canvas 直接フレーム方式を使用する。
       // TrackProcessor/captureStream 経路は環境差で静止画区間の尺ズレが発生しやすいため、
       // 問題収束まで一時的に固定運用とする。
       const useManualCanvasFrames = true;
-      // iOS Safari では OfflineAudioContext でプリレンダリングするため、
-      // TrackProcessor / ScriptProcessor は基本的に不要。
-      // OfflineAudioContext 失敗時のフォールバックとして ScriptProcessor を使用。
-      const useScriptProcessorAudio = isIosSafari;
-      const trackProcessorCtor = TrackProcessor as TrackProcessorConstructor | undefined;
-
       // 停止用シグナル
       const controller = new AbortController();
       abortControllerRef.current = controller;
       const { signal } = controller;
-      const maxAudioTimestampUs =
-        audioSources && Number.isFinite(audioSources.totalDuration)
-          ? Math.max(0, Math.round(audioSources.totalDuration * 1e6))
-          : Number.POSITIVE_INFINITY;
-      const expectedVideoFrames =
-        audioSources && Number.isFinite(audioSources.totalDuration)
-          ? Math.max(1, Math.round(audioSources.totalDuration * FPS))
-          : null;
+      const exportDurationUs = resolvedExportDuration
+        ? resolvedExportDuration.exportDurationUs
+        : Number.POSITIVE_INFINITY;
+      const exportDurationSec = resolvedExportDuration
+        ? resolvedExportDuration.exportDurationSec
+        : null;
+      const maxAudioTimestampUs = resolvedExportDuration
+        ? resolvedExportDuration.exportDurationUs
+        : Number.POSITIVE_INFINITY;
+      const expectedVideoFrames = resolvedExportDuration
+        ? Math.max(1, resolvedExportDuration.frameCount)
+        : null;
+      exportPhaseRef.current = 'rendering';
+      logInfo('[EXPORT-FSM] transition', {
+        from: 'preparing',
+        to: 'rendering',
+        reason: 'rendering started',
+        cancelReason: exportCancelReasonRef.current,
+        hasExportUrl: Boolean(exportUrl),
+      });
       const getPlaybackTimeSec = (): number | null => {
         if (!audioSources?.getPlaybackTimeSec) return null;
         const raw = audioSources.getPlaybackTimeSec();
@@ -889,328 +1448,172 @@ export function useExport(): UseExportReturn {
       let scriptProcessorNode: ScriptProcessorNode | null = null;
       let scriptProcessorSource: MediaStreamAudioSourceNode | null = null;
       let canvasFramePumpTimer: ReturnType<typeof setInterval> | null = null;
+      let preRenderedAudioBuffer: AudioBuffer | null = null;
+      let preRenderedAudioPrepared = false;
+      let preRenderedAudioPromise: Promise<AudioBuffer | null> | null = null;
+      const shouldPrepareOfflineAudioBuffer = shouldUseOfflineAudioPreRender({
+        hasAudioSources: !!audioSources,
+        isIosSafari,
+      });
+
+      const ensurePreRenderedAudioBuffer = async (reason: 'required' = 'required'): Promise<AudioBuffer | null> => {
+        if (preRenderedAudioPromise) {
+          return preRenderedAudioPromise;
+        }
+        if (preRenderedAudioPrepared) {
+          return preRenderedAudioBuffer;
+        }
+        preRenderedAudioPrepared = true;
+
+        if (!shouldPrepareOfflineAudioBuffer || !audioSources) {
+          return null;
+        }
+
+        const preRenderedAudioDurationSec = exportDurationSec ?? audioSources.totalDuration;
+
+        logInfo('[DIAG-3] OfflineAudioContext パス開始', {
+          totalDuration: audioSources.totalDuration,
+          alignedDurationSec: preRenderedAudioDurationSec,
+          sampleRate: audioContext.sampleRate,
+          isIosSafari,
+          reason,
+        });
+
+        preRenderedAudioPromise = (async () => {
+          try {
+            const renderedAudio = await offlineRenderAudio(
+              {
+                ...audioSources,
+                totalDuration: preRenderedAudioDurationSec,
+              },
+              audioContext as AudioContext,
+              audioContext.sampleRate,
+              signal,
+              {
+                diagnostics: { exportSessionId },
+                resolveExportAudioSource: config.resolveExportAudioSource,
+                isIosSafari,
+                audioDecodeCache,
+              },
+            );
+            if (renderedAudio && !signal.aborted) {
+              preRenderedAudioBuffer = renderedAudio;
+            }
+          } catch (e) {
+            logWarn('OfflineAudioContext失敗、通常経路へフォールバック', {
+              error: e instanceof Error ? e.message : String(e),
+              reason,
+            });
+          }
+          return preRenderedAudioBuffer;
+        })();
+
+        return preRenderedAudioPromise;
+      };
 
       try {
-        // iOS Safari は WebCodecs AudioEncoder の音声無音化が起きるケースがあるため、
-        // MediaRecorder の MP4 経路を最優先で使用する。
-        const runIosSafariMediaRecorderExport = async (): Promise<boolean> => {
-          if (!isIosSafari) return false;
+        // キャンバスをエクスポート用の高解像度モードへ切り替える。
+        // プレビュー時は軽量サイズ（〜720p）で描画し、エクスポート時のみ最大 1080p で書き出す。
+        // React 再レンダリング前に captureStream が呼ばれる可能性があるため、
+        // canvas 要素の width/height は ref 経由で即座に書き換える。
+        useCanvasStore.getState().beginExportMode();
+        const { exportWidth, exportHeight } = useCanvasStore.getState();
+        if (canvasRef.current.width !== exportWidth) {
+          canvasRef.current.width = exportWidth;
+        }
+        if (canvasRef.current.height !== exportHeight) {
+          canvasRef.current.height = exportHeight;
+        }
 
-          const profile = getSupportedMediaRecorderProfile();
-          if (!profile) {
-            useLogStore.getState().warn('RENDER', 'iOS Safari: MediaRecorder が未対応のため WebCodecs 経路へフォールバック');
-            return false;
-          }
+        const exportVideoBitrate = computeExportVideoBitrate(
+          canvasRef.current.width,
+          canvasRef.current.height,
+        );
+        logInfo('エクスポート用キャンバスサイズへ切替', {
+          width: canvasRef.current.width,
+          height: canvasRef.current.height,
+          bitrate: exportVideoBitrate,
+        });
 
-          const exportDest = masterDestRef.current!;
-          const canvasStream = canvas.captureStream(FPS);
-          const canvasVideoTrack = canvasStream.getVideoTracks()[0] as
-            (MediaStreamTrack & { requestFrame?: () => void }) | undefined;
-          const sourceAudioTracks = exportDest.stream.getAudioTracks();
-          const liveAudioTracks = sourceAudioTracks.filter((track) => track.readyState === 'live');
-          if (liveAudioTracks.length === 0) {
-            useLogStore.getState().warn('RENDER', 'iOS Safari: 有効な音声トラックがないため WebCodecs 経路へフォールバック', {
-              sourceTrackCount: sourceAudioTracks.length,
-              sourceTrackStates: sourceAudioTracks.map((track) => track.readyState),
-            });
-            canvasStream.getTracks().forEach((track) => {
-              try { track.stop(); } catch { /* ignore */ }
-            });
-            return false;
-          }
+        const strategyOrder = config.resolveExportStrategyOrder({
+          isIosSafari,
+          supportedMediaRecorderProfile,
+        });
 
-          // 元トラックを stop すると後続エクスポートや再生に影響するため、録画用には clone を使用する。
-          const recorderAudioTracks = liveAudioTracks.map((track) => track.clone());
-          let keepAliveOscillator: OscillatorNode | null = null;
-          let keepAliveGain: GainNode | null = null;
-          let framePumpTimer: ReturnType<typeof setInterval> | null = null;
-          let abortStopTimer: ReturnType<typeof setTimeout> | null = null;
-          const combined = new MediaStream([
-            ...canvasStream.getVideoTracks(),
-            ...recorderAudioTracks,
-          ]);
-
-          // iOS Safari: 静止画主体のタイムラインでは Canvas 変化が少なく、
-          // captureStream のフレーム供給が不安定になることがあるため、requestFrame で明示供給する。
-          if (canvasVideoTrack && typeof canvasVideoTrack.requestFrame === 'function') {
-            const frameIntervalMs = Math.max(16, Math.round(1000 / FPS));
-            framePumpTimer = setInterval(() => {
-              try {
-                canvasVideoTrack.requestFrame?.();
-              } catch {
-                // ignore
-              }
-            }, frameIntervalMs);
-          }
-
-          // iOS Safari で無音最適化されるのを防ぐため、極小レベルの keep-alive 音声を維持する。
-          try {
-            keepAliveOscillator = audioContext.createOscillator();
-            keepAliveGain = audioContext.createGain();
-            keepAliveOscillator.frequency.value = 440;
-            keepAliveGain.gain.value = 0.00001;
-            keepAliveOscillator.connect(keepAliveGain);
-            keepAliveGain.connect(exportDest);
-            keepAliveOscillator.start();
-          } catch (err) {
-            keepAliveOscillator = null;
-            keepAliveGain = null;
-            useLogStore.getState().warn('RENDER', 'iOS Safari: keep-alive 音声ノードの初期化に失敗（続行）', {
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-
-          const cleanupStreams = () => {
-            canvasStream.getTracks().forEach((track) => {
-              try {
-                track.stop();
-              } catch {
-                // ignore
-              }
-            });
-            recorderAudioTracks.forEach((track) => {
-              try {
-                track.stop();
-              } catch {
-                // ignore
-              }
-            });
-            if (framePumpTimer) {
-              clearInterval(framePumpTimer);
-              framePumpTimer = null;
-            }
-            if (abortStopTimer) {
-              clearTimeout(abortStopTimer);
-              abortStopTimer = null;
-            }
-            if (keepAliveOscillator) {
-              try { keepAliveOscillator.stop(); } catch { /* ignore */ }
-              try { keepAliveOscillator.disconnect(); } catch { /* ignore */ }
-              keepAliveOscillator = null;
-            }
-            if (keepAliveGain) {
-              try { keepAliveGain.disconnect(); } catch { /* ignore */ }
-              keepAliveGain = null;
-            }
-          };
-
-          const recorderOptions: MediaRecorderOptions = {
-            videoBitsPerSecond: EXPORT_VIDEO_BITRATE,
-            audioBitsPerSecond: 128000,
-          };
-          if (profile.mimeType) {
-            recorderOptions.mimeType = profile.mimeType;
-          }
-
-          useLogStore.getState().info('RENDER', 'iOS Safari: MediaRecorder 経路でエクスポート開始', {
-            mimeType: profile.mimeType || '(default)',
-            extension: profile.extension,
-            sourceAudioTrackCount: sourceAudioTracks.length,
-            sourceAudioTrackStates: sourceAudioTracks.map((track) => track.readyState),
-            recorderAudioTrackCount: recorderAudioTracks.length,
-            hasCanvasFramePump: !!framePumpTimer,
-          });
-
-          let startedSuccessfully = false;
-          await new Promise<void>((resolve, reject) => {
-            let settled = false;
-            const chunks: Blob[] = [];
-            let recorder: MediaRecorder | null = null;
-            let pausedByVisibility = false;
-            let visibilityListenersAttached = false;
-
-            const finishResolve = () => {
-              if (settled) return;
-              settled = true;
-              resolve();
-            };
-
-            const finishReject = (err: Error) => {
-              if (settled) return;
-              settled = true;
-              reject(err);
-            };
-
-            const removeVisibilityListeners = () => {
-              if (!visibilityListenersAttached || typeof document === 'undefined') return;
-              document.removeEventListener('visibilitychange', handleRecorderVisibilityChange);
-              if (typeof window !== 'undefined') {
-                window.removeEventListener('focus', handleRecorderVisibilityChange);
-                window.removeEventListener('pageshow', handleRecorderVisibilityChange);
-              }
-              visibilityListenersAttached = false;
-            };
-
-            const handleRecorderVisibilityChange = () => {
-              if (!recorder || recorder.state === 'inactive' || typeof document === 'undefined') return;
-              const isVisible = document.visibilityState === 'visible';
-
-              if (!isVisible) {
-                if (recorder.state === 'recording') {
-                  try {
-                    recorder.pause();
-                    pausedByVisibility = true;
-                    useLogStore.getState().info('RENDER', 'iOS Safari: 非アクティブ化のため録画を一時停止');
-                  } catch (err) {
-                    useLogStore.getState().warn('RENDER', 'iOS Safari: 非アクティブ化時の録画一時停止に失敗', {
-                      error: err instanceof Error ? err.message : String(err),
-                    });
-                  }
-                }
-                return;
-              }
-
-              if (pausedByVisibility && recorder.state === 'paused') {
-                try {
-                  recorder.resume();
-                  pausedByVisibility = false;
-                  useLogStore.getState().info('RENDER', 'iOS Safari: 可視復帰で録画を再開');
-                } catch (err) {
-                  useLogStore.getState().warn('RENDER', 'iOS Safari: 可視復帰時の録画再開に失敗', {
-                    error: err instanceof Error ? err.message : String(err),
-                  });
-                }
-              }
-              try {
-                canvasVideoTrack?.requestFrame?.();
-              } catch {
-                // ignore
-              }
-            };
-
-            const addVisibilityListeners = () => {
-              if (typeof document === 'undefined' || visibilityListenersAttached) return;
-              document.addEventListener('visibilitychange', handleRecorderVisibilityChange);
-              if (typeof window !== 'undefined') {
-                window.addEventListener('focus', handleRecorderVisibilityChange);
-                window.addEventListener('pageshow', handleRecorderVisibilityChange);
-              }
-              visibilityListenersAttached = true;
-            };
-
-            const cleanup = () => {
-              signal.removeEventListener('abort', onAbort);
-              removeVisibilityListeners();
-              cleanupStreams();
-            };
-
-            const onAbort = () => {
-              if (recorder && recorder.state !== 'inactive') {
-                try {
-                  canvasVideoTrack?.requestFrame?.();
-                } catch {
-                  // ignore
-                }
-                try {
-                  recorder.requestData();
-                } catch {
-                  // ignore
-                }
-                // iOS Safari では requestData 直後に stop すると終端チャンクが欠落する場合があるため、
-                // 最終フラッシュ時間を確保してから stop する。
-                if (!abortStopTimer) {
-                  abortStopTimer = setTimeout(() => {
-                    abortStopTimer = null;
-                    if (recorder && recorder.state !== 'inactive') {
-                      try {
-                        recorder.stop();
-                      } catch {
-                        // ignore
-                      }
-                    }
-                  }, 180);
-                }
-              }
-            };
-
-            try {
-              recorder = new MediaRecorder(combined, recorderOptions);
-              recorderRef.current = recorder;
-            } catch (err) {
-              cleanup();
-              recorderRef.current = null;
-              useLogStore.getState().warn('RENDER', 'iOS Safari: MediaRecorder 初期化失敗、WebCodecs 経路へフォールバック', {
-                error: err instanceof Error ? err.message : String(err),
-              });
-              finishResolve();
-              return;
-            }
-
-            signal.addEventListener('abort', onAbort, { once: true });
-            addVisibilityListeners();
-
-            recorder.ondataavailable = (event: BlobEvent) => {
-              if (event.data && event.data.size > 0) {
-                chunks.push(event.data);
-              }
-            };
-
-            recorder.onerror = () => {
-              cleanup();
-              finishReject(new Error('MediaRecorder で録画中にエラーが発生しました'));
-            };
-
-            recorder.onstop = () => {
-              cleanup();
-              recorderRef.current = null;
-
-              if (chunks.length === 0) {
-                finishReject(new Error('MediaRecorder の出力データが空です'));
-                return;
-              }
-
-              const blob = new Blob(chunks, { type: profile.mimeType || 'video/mp4' });
-              const url = URL.createObjectURL(blob);
-              setExportUrl(url);
-              setExportExt(profile.extension);
-
-              useLogStore.getState().info('RENDER', 'iOS Safari: MediaRecorder エクスポート完了', {
-                chunks: chunks.length,
-                blobSizeBytes: blob.size,
-                extension: profile.extension,
-              });
-
-              onRecordingStop(url, profile.extension);
-              finishResolve();
-            };
-
-            try {
-              // iOS Safari では timeslice が粗いと終端側の時間解像度が荒くなるため、
-              // 短めの timeslice でチャンクを小刻みに取り出す。
-              recorder.start(250);
-              try {
-                canvasVideoTrack?.requestFrame?.();
-              } catch {
-                // ignore
-              }
-              startedSuccessfully = true;
-              useLogStore.getState().info('RENDER', '[DIAG-READY] 音声準備完了、再生ループ開始通知（MediaRecorder経路）');
-              audioSources?.onAudioPreRenderComplete?.();
-              handleRecorderVisibilityChange();
-            } catch (err) {
-              cleanup();
-              recorderRef.current = null;
-              useLogStore.getState().warn('RENDER', 'iOS Safari: MediaRecorder 開始失敗、WebCodecs 経路へフォールバック', {
-                error: err instanceof Error ? err.message : String(err),
-              });
-              finishResolve();
-            }
-          });
-
-          return startedSuccessfully;
-        };
+        logInfo('エクスポート戦略候補を解決', {
+          strategyOrder,
+          isIosSafari,
+          supportsTrackProcessor: canUseTrackProcessor,
+          supportsMp4MediaRecorder: !!supportedMediaRecorderProfile,
+          preRenderOfflineAudio: shouldPrepareOfflineAudioBuffer,
+        });
 
         if (isIosSafari) {
-          const handledByMediaRecorder = await runIosSafariMediaRecorderExport();
+          logInfo('iOS Safari export route', {
+            safariDetected: isIosSafari,
+            exportRoute: strategyOrder[0] ?? 'webcodecs-mp4',
+            audioContextState: (audioContext as AudioContext).state,
+            hasLiveAudioTrack,
+            hasAudioSources: !!audioSources,
+          });
+        }
+
+        if (strategyOrder.includes('ios-safari-mediarecorder') && config.runMediaRecorderStrategy) {
+          let preRenderedAudio: PreRenderedRecorderAudioSource | null = null;
+          const renderedAudioForMediaRecorder = await ensurePreRenderedAudioBuffer('required');
+          if (renderedAudioForMediaRecorder && !signal.aborted) {
+            preRenderedAudio = createPreRenderedRecorderAudioSource(
+              renderedAudioForMediaRecorder,
+              audioContext as AudioContext,
+            );
+          }
+
+          let handledByMediaRecorder = false;
+          try {
+            handledByMediaRecorder = await config.runMediaRecorderStrategy({
+              canvas,
+              masterDest: masterDestRef.current!,
+              audioContext: audioContext as AudioContext,
+              signal,
+              audioSources,
+              preRenderedAudio,
+              callbacks: {
+                onRecordingStop: notifyRecordingStop,
+                onRecordingError,
+              },
+              state: {
+                setExportUrl,
+                setExportExt,
+              },
+              refs: {
+                recorderRef,
+              },
+              exportConfig: {
+                fps: FPS,
+                videoBitrate: exportVideoBitrate,
+              },
+              supportedMediaRecorderProfile,
+              diagnostics: {
+                exportSessionId,
+              },
+            });
+          } finally {
+            if (!handledByMediaRecorder) {
+              preRenderedAudio?.cleanup();
+            }
+          }
           if (handledByMediaRecorder) {
             return;
           }
+        } else if (strategyOrder.includes('ios-safari-mediarecorder')) {
+          logWarn('MediaRecorder export strategy is unavailable in this runtime; falling back to WebCodecs');
         }
 
         if (typeof VideoEncoder === 'undefined' || typeof AudioEncoder === 'undefined') {
           throw new Error('WebCodecsに対応していないブラウザです');
         }
 
+        updatePreparationStep(audioSources, 8);
         // 1. Muxerの初期化 (ArrayBufferTarget -> メモリ上に構築)
         // 音声は常にセットアップする（iOS Safariでは audioTrack が取得できないケースでも
         // ScriptProcessorNode 経由で音声データをキャプチャするため）
@@ -1220,7 +1623,12 @@ export function useExport(): UseExportReturn {
             codec: 'avc', // H.264
             width,
             height,
-            frameRate: FPS, // タイムスタンプをフレームレートに合わせて丸める（Teams互換性向上）
+            // frameRate を指定しない → デフォルト timescale 57600 を使用。
+            // 57600 は 30 の倍数 (57600/30=1920) なので通常フレームは整数 ticks で
+            // 正確に表現でき、短い最終フレーム (例: 0.01s → 576 ticks) も有効値を保つ。
+            // frameRate: FPS (=30) を設定すると timescale=30 になり、最終フレームの
+            // duration が丸めで 0 になる (例: 0.01s × 30 = 0.3 → round → 0 ticks)。
+            // その結果 AV 尺差が発生し Teams デスクトップでスロー再生となる。
           },
           audio: {
             codec: 'aac' as const,
@@ -1232,6 +1640,9 @@ export function useExport(): UseExportReturn {
         });
 
         // 2. VideoEncoder の設定
+        let encodedVideoEndUs = 0;
+        let muxedAudioEndUs = 0;
+        let finalAudioInputSamples = 0;
         const videoEncoder = new VideoEncoder({
           output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
           error: (e) => console.error('VideoEncoder error:', e),
@@ -1240,7 +1651,7 @@ export function useExport(): UseExportReturn {
           codec: 'avc1.4d002a', // Main Profile, Level 4.2 (widely supported)
           width,
           height,
-          bitrate: EXPORT_VIDEO_BITRATE,
+          bitrate: exportVideoBitrate,
           framerate: FPS,
         });
 
@@ -1250,6 +1661,8 @@ export function useExport(): UseExportReturn {
         let audioEncoderSkippedChunks = 0;
         let audioEncoderClippedChunks = 0;
         let audioEncoderClippedDurationUs = 0;
+        let audioEncoderPaddedChunks = 0;
+        let audioEncoderPaddedSamples = 0;
         // AAC-LC は通常 1024 sample/frame。duration が取れないケースの保険値。
         const fallbackAacChunkDurationUs = Math.max(1, Math.round((1024 / audioContext.sampleRate) * 1e6));
         const audioEncoder = new AudioEncoder({
@@ -1303,6 +1716,7 @@ export function useExport(): UseExportReturn {
                 const rawData = new Uint8Array(chunk.byteLength);
                 chunk.copyTo(rawData);
                 muxer.addAudioChunkRaw(rawData, chunk.type, chunkTimestampUs, clippedDurationUs, meta);
+                muxedAudioEndUs = Math.max(muxedAudioEndUs, chunkTimestampUs + clippedDurationUs);
                 audioEncoderClippedChunks++;
                 audioEncoderClippedDurationUs += chunkDurationUs - clippedDurationUs;
                 if (audioEncoderClippedChunks === 1 || audioEncoderClippedChunks % 10 === 0) {
@@ -1320,6 +1734,7 @@ export function useExport(): UseExportReturn {
             }
 
             muxer.addAudioChunk(chunk, meta);
+            muxedAudioEndUs = Math.max(muxedAudioEndUs, chunkEndUs);
           },
           error: (e) => {
             useLogStore.getState().error('RENDER', 'AudioEncoder エラー', { error: String(e) });
@@ -1345,71 +1760,69 @@ export function useExport(): UseExportReturn {
           bitrate: audioEncoderConfig.bitrate,
         });
 
-        // === iOS Safari: OfflineAudioContext による音声プリレンダリング ===
+        // === 条件付き: OfflineAudioContext による音声プリレンダリング ===
         let offlineAudioDone = false;
-        if (audioSources) {
-          // [DIAG-3] OfflineAudioContext パス開始（全環境で優先）
-          useLogStore.getState().info('RENDER', '[DIAG-3] OfflineAudioContext パス開始', {
-            totalDuration: audioSources.totalDuration,
-            sampleRate: audioContext.sampleRate,
-            audioEncoderState: audioEncoder.state,
-            isIosSafari,
-          });
-          try {
-            const renderedAudio = await offlineRenderAudio(
-              audioSources,
-              audioContext as AudioContext,  // メインAudioContextでデコード（iOS Safari互換性向上）
-              audioContext.sampleRate,
-              signal,
-            );
-            if (renderedAudio && !signal.aborted) {
-              // [DIAG-4] feedPreRenderedAudio 呼び出し前の AudioEncoder 状態
-              useLogStore.getState().info('RENDER', '[DIAG-4] feed開始前 AudioEncoder状態', {
-                state: audioEncoder.state,
-                queueSize: audioEncoder.encodeQueueSize,
-                outputChunksSoFar: audioEncoderOutputChunks,
-              });
-              const encodedChunks = feedPreRenderedAudio(
-                renderedAudio,
-                audioEncoder,
-                signal,
-                audioSources.totalDuration,
-              );
-              // [DIAG-5] feed完了後の AudioEncoder 状態
-              useLogStore.getState().info('RENDER', '[DIAG-5] feed完了後 AudioEncoder状態', {
-                state: audioEncoder.state,
-                queueSize: audioEncoder.encodeQueueSize,
-                outputChunksAfterFeed: audioEncoderOutputChunks,
-                encodedInputChunks: encodedChunks,
-              });
-              offlineAudioDone = true;
-              useLogStore.getState().info('RENDER', '[DIAG-5b] iOS Safari: 音声プリレンダリング＆エンコード完了', {
-                encodedChunks,
-                audioEncoderOutputChunks,
-                audioEncoderOutputBytes,
-                offlineAudioDone,
-              });
-            } else if (!signal.aborted) {
-              useLogStore.getState().warn('RENDER', 'OfflineAudioContext失敗、ScriptProcessorにフォールバック');
-            }
-          } catch (e) {
-            useLogStore.getState().warn('RENDER', 'OfflineAudioContext例外、ScriptProcessorにフォールバック', {
-              error: e instanceof Error ? e.message : String(e),
+        const shouldPreRenderAudio = shouldUseOfflineAudioPreRender({
+          hasAudioSources: !!audioSources,
+          isIosSafari,
+        });
+        if (shouldPreRenderAudio && audioSources) {
+          const renderedAudio = await ensurePreRenderedAudioBuffer('required');
+          if (renderedAudio && !signal.aborted) {
+            useLogStore.getState().info('RENDER', '[DIAG-4] feed開始前 AudioEncoder状態', {
+              state: audioEncoder.state,
+              queueSize: audioEncoder.encodeQueueSize,
+              outputChunksSoFar: audioEncoderOutputChunks,
             });
+            const audioFeedResult = feedPreRenderedAudio(
+              renderedAudio,
+              audioEncoder,
+              signal,
+              exportDurationUs,
+            );
+            finalAudioInputSamples = Math.max(finalAudioInputSamples, audioFeedResult.encodedSamples);
+            useLogStore.getState().info('RENDER', '[DIAG-5] feed完了後 AudioEncoder状態', {
+              state: audioEncoder.state,
+              queueSize: audioEncoder.encodeQueueSize,
+              outputChunksAfterFeed: audioEncoderOutputChunks,
+              encodedInputChunks: audioFeedResult.encodedChunks,
+              encodedInputSamples: audioFeedResult.encodedSamples,
+              trimmedInputSamples: audioFeedResult.trimmedSamples,
+            });
+            offlineAudioDone = true;
+            useLogStore.getState().info('RENDER', '[DIAG-5b] iOS Safari: 音声プリレンダリング＆エンコード完了', {
+              encodedChunks: audioFeedResult.encodedChunks,
+              audioEncoderOutputChunks,
+              audioEncoderOutputBytes,
+              finalAudioInputSamples,
+              offlineAudioDone,
+            });
+          } else if (!signal.aborted) {
+            useLogStore.getState().warn('RENDER', 'OfflineAudioContext失敗、ScriptProcessorにフォールバック');
           }
         }
 
         // ============================================================
         // [DIAG-6] オフラインレンダリング後のパス分岐判断
         // ============================================================
-        useLogStore.getState().info('RENDER', '[DIAG-6] 音声パス判断結果', {
+        const webCodecsAudioCaptureStrategy = resolveWebCodecsAudioCaptureStrategy({
+          offlineAudioDone,
+          isIosSafari,
+          hasLiveAudioTrack,
+          canUseTrackProcessor,
+        });
+        logInfo('[DIAG-6] 音声パス判断結果', {
           offlineAudioDone,
           isIosSafari,
           hasAudioSources: !!audioSources,
+          hasAudioTrack: !!audioTrack,
+          hasLiveAudioTrack,
+          audioTrackReadyState: audioTrack?.readyState ?? 'none',
           audioEncoderOutputChunks,
           audioEncoderOutputBytes,
-          willUseScriptProcessor: !offlineAudioDone && isIosSafari,
-          willUseTrackProcessor: !offlineAudioDone && !isIosSafari && !!audioTrack && canUseTrackProcessor,
+          audioCaptureStrategy: webCodecsAudioCaptureStrategy,
+          willUseScriptProcessor: webCodecsAudioCaptureStrategy === 'script-processor',
+          willUseTrackProcessor: webCodecsAudioCaptureStrategy === 'track-processor',
         });
 
         // 4. ストリームの取得と処理
@@ -1514,19 +1927,21 @@ export function useExport(): UseExportReturn {
           useLogStore.getState().info('RENDER', 'iOS Safari向けにCanvas直接キャプチャを使用');
         }
 
-        if (!offlineAudioDone && audioTrack && !useScriptProcessorAudio && canUseTrackProcessor && trackProcessorCtor) {
+        if (webCodecsAudioCaptureStrategy === 'track-processor' && audioTrack && trackProcessorCtor) {
           // TrackProcessor 経由の音声キャプチャ（PC/Android 向け）
           const audioProcessor = new trackProcessorCtor({ track: audioTrack });
           audioReader = audioProcessor.readable.getReader() as ReadableStreamDefaultReader<AudioData>;
           audioReaderRef.current = audioReader;
           useLogStore.getState().info('RENDER', 'TrackProcessor経由で音声をキャプチャ');
-        } else if (!offlineAudioDone) {
+        } else if (webCodecsAudioCaptureStrategy === 'script-processor') {
           // ScriptProcessorNode 経由の音声キャプチャ（フォールバック）
           // iOS Safari で OfflineAudioContext が失敗した場合、または非Safari で TrackProcessor 非対応時。
           useLogStore.getState().info('RENDER', 'ScriptProcessorNode経由で音声をキャプチャ（フォールバック）', {
             isIosSafari,
             canUseTrackProcessor,
             hasAudioTrack: !!audioTrack,
+            hasLiveAudioTrack,
+            audioTrackReadyState: audioTrack?.readyState ?? 'none',
           });
 
           const audioCtx = audioContext as AudioContext;
@@ -1571,6 +1986,10 @@ export function useExport(): UseExportReturn {
               audioData.close();
 
               capturedChunks++;
+              finalAudioInputSamples = Math.max(
+                finalAudioInputSamples,
+                calculateFinalAudioSampleCount(audioCtx.sampleRate, audioTimestamp, numberOfFrames, exportDurationUs),
+              );
               audioTimestamp += Math.round((numberOfFrames / audioCtx.sampleRate) * 1e6);
 
               // 初回キャプチャ成功をログ
@@ -1669,7 +2088,6 @@ export function useExport(): UseExportReturn {
 
         const processVideoWithTrackProcessor = async () => {
           let frameIndex = 0;
-          const frameDuration = 1e6 / FPS; // 1フレームあたりの時間（マイクロ秒）
           const isKeyFrame = (index: number) => index === 0 || index % FPS === 0;
 
           try {
@@ -1702,14 +2120,21 @@ export function useExport(): UseExportReturn {
                   // [FIX] Teamsスロー再生対策
                   // オリジナルのtimestamp（実時間ベース）を使うと、レンダリング遅延（ジッター）が含まれ
                   // 結果としてVFR（可変フレームレート）となり、一部プレーヤーで再生時間が間延びする。
-                  // そのため、強制的にCFR（固定フレームレート）としてタイムスタンプを書き換える。
-                  const newTimestamp = Math.round(frameIndex * frameDuration);
+                  // そのため、フレーム順序ベースの決定的なタイムスタンプへ揃えつつ、
+                  // 総尺は生のタイムライン値へ一致させる。
+                  const frameTiming = resolvedExportDuration
+                    ? getExportFrameTiming(resolvedExportDuration, FPS, frameIndex)
+                    : {
+                      timestampUs: Math.round(frameIndex * (1e6 / FPS)),
+                      durationUs: Math.round(1e6 / FPS),
+                    };
+                  encodedVideoEndUs = Math.max(encodedVideoEndUs, frameTiming.timestampUs + frameTiming.durationUs);
 
                   // 新しいタイムスタンプでフレームを再作成
                   // copyToなどのコストを避けるため、VideoFrameコンストラクタでラップする
                   const newFrame = new VideoFrame(originalFrame, {
-                    timestamp: newTimestamp,
-                    duration: Math.round(frameDuration),
+                    timestamp: frameTiming.timestampUs,
+                    duration: frameTiming.durationUs,
                   });
 
                   // エンコード
@@ -1728,9 +2153,16 @@ export function useExport(): UseExportReturn {
             if (!signal.aborted && completionRequestedRef.current && expectedVideoFrames !== null && frameIndex < expectedVideoFrames && videoEncoder.state === 'configured') {
               const missingFrames = expectedVideoFrames - frameIndex;
               for (let i = 0; i < missingFrames; i++) {
+                const frameTiming = resolvedExportDuration
+                  ? getExportFrameTiming(resolvedExportDuration, FPS, frameIndex)
+                  : {
+                    timestampUs: Math.round(frameIndex * (1e6 / FPS)),
+                    durationUs: Math.round(1e6 / FPS),
+                  };
+                encodedVideoEndUs = Math.max(encodedVideoEndUs, frameTiming.timestampUs + frameTiming.durationUs);
                 const frame = new VideoFrame(canvas, {
-                  timestamp: Math.round(frameIndex * frameDuration),
-                  duration: Math.round(frameDuration),
+                  timestamp: frameTiming.timestampUs,
+                  duration: frameTiming.durationUs,
                 });
                 videoEncoder.encode(frame, { keyFrame: isKeyFrame(frameIndex) });
                 frame.close();
@@ -1751,7 +2183,6 @@ export function useExport(): UseExportReturn {
 
         const processVideoWithCanvasFrames = async () => {
           let frameIndex = 0;
-          const frameDuration = 1e6 / FPS;
           const framePollInterval = 16;
           const isKeyFrame = (index: number) => index === 0 || index % FPS === 0;
 
@@ -1768,17 +2199,23 @@ export function useExport(): UseExportReturn {
 
               const forceToEnd = completionRequestedRef.current;
               const targetFrameCount = getTargetVideoFrameCount(forceToEnd);
-              let framesToEncode = targetFrameCount === null ? 1 : targetFrameCount - frameIndex;
-              if (framesToEncode < 0) framesToEncode = 0;
-              if (!forceToEnd) {
-                framesToEncode = Math.min(framesToEncode, Math.max(1, Math.ceil(FPS / 2)));
-              }
+              const pendingFrameCount = targetFrameCount === null ? 1 : targetFrameCount - frameIndex;
+              const framesToEncode = resolveExportCanvasFrameBurstCount({
+                pendingFrameCount,
+              });
 
               if (videoEncoder.state === 'configured' && framesToEncode > 0) {
                 for (let i = 0; i < framesToEncode; i++) {
+                  const frameTiming = resolvedExportDuration
+                    ? getExportFrameTiming(resolvedExportDuration, FPS, frameIndex)
+                    : {
+                      timestampUs: Math.round(frameIndex * (1e6 / FPS)),
+                      durationUs: Math.round(1e6 / FPS),
+                    };
+                  encodedVideoEndUs = Math.max(encodedVideoEndUs, frameTiming.timestampUs + frameTiming.durationUs);
                   const frame = new VideoFrame(canvas, {
-                    timestamp: Math.round(frameIndex * frameDuration),
-                    duration: Math.round(frameDuration),
+                    timestamp: frameTiming.timestampUs,
+                    duration: frameTiming.durationUs,
                   });
                   videoEncoder.encode(frame, { keyFrame: isKeyFrame(frameIndex) });
                   frame.close();
@@ -1831,6 +2268,11 @@ export function useExport(): UseExportReturn {
                   data.close();
                   break;
                 }
+                const dataTimestampUs = Math.max(0, Math.round(data.timestamp));
+                finalAudioInputSamples = Math.max(
+                  finalAudioInputSamples,
+                  calculateFinalAudioSampleCount(data.sampleRate, dataTimestampUs, data.numberOfFrames, exportDurationUs),
+                );
                 if (audioEncoder.state === 'configured') {
                   audioEncoder.encode(data);
                 }
@@ -1909,14 +2351,16 @@ export function useExport(): UseExportReturn {
           removeEventListener: () => { },
           dispatchEvent: () => true,
           audioBitsPerSecond: 128000,
-          videoBitsPerSecond: EXPORT_VIDEO_BITRATE
+          videoBitsPerSecond: exportVideoBitrate
         } as unknown as MediaRecorder;
 
         // 音声プリレンダリング完了を通知 — エクスポート用の再生ループを開始させる
         // iOS Safari では extractAudioViaVideoElement にリアルタイムがかかるため、
         // このコールバックのタイミングが重要。
-        // PC/Android では offlineRenderAudio が高速なため即座に呼ばれる。
-        useLogStore.getState().info('RENDER', '[DIAG-READY] 音声準備完了、再生ループ開始通知');
+        // Step 9 は実際の映像生成ループ開始直前に進め、直後の onAudioPreRenderComplete
+        // で preview/export loop を始動させる。
+        updatePreparationStep(audioSources, 9);
+        logInfo('[DIAG-READY] 音声準備完了、再生ループ開始通知');
         audioSources?.onAudioPreRenderComplete?.();
 
         // 停止されるまで待機（processingは停止シグナルで終わる）
@@ -1933,19 +2377,65 @@ export function useExport(): UseExportReturn {
           scriptProcessorSource = null;
         }
 
+        if (!signal.aborted && audioSources && !offlineAudioDone && audioEncoderOutputChunks === 0) {
+          useLogStore.getState().warn('RENDER', 'リアルタイム音声キャプチャ結果が空のため、OfflineAudioContext へフォールバック', {
+            isIosSafari,
+            hasAudioTrack: !!audioTrack,
+            hasLiveAudioTrack,
+            audioTrackReadyState: audioTrack?.readyState ?? 'none',
+            canUseTrackProcessor,
+          });
+          const renderedAudio = await ensurePreRenderedAudioBuffer('required');
+          if (renderedAudio && !signal.aborted) {
+            const audioFeedResult = feedPreRenderedAudio(
+              renderedAudio,
+              audioEncoder,
+              signal,
+              exportDurationUs,
+            );
+            finalAudioInputSamples = Math.max(finalAudioInputSamples, audioFeedResult.encodedSamples);
+            offlineAudioDone = true;
+            useLogStore.getState().info('RENDER', 'OfflineAudioContext フォールバックで音声を補完', {
+              encodedChunks: audioFeedResult.encodedChunks,
+              encodedInputSamples: audioFeedResult.encodedSamples,
+              audioEncoderOutputChunks,
+              audioEncoderOutputBytes,
+            });
+          }
+        }
+
+        if (!signal.aborted && Number.isFinite(exportDurationUs)) {
+          const finalAudioResult = finalizeAudioForExport(
+            audioEncoder,
+            audioContext.sampleRate,
+            signal,
+            finalAudioInputSamples,
+            exportDurationUs,
+          );
+          finalAudioInputSamples = finalAudioResult.finalSampleCount;
+          audioEncoderPaddedChunks += finalAudioResult.paddedChunks;
+          audioEncoderPaddedSamples += finalAudioResult.paddedSamples;
+        }
+
+        updatePreparationStep(audioSources, 10);
         // ============================================================
         // [DIAG-7] フラッシュ前の最終状態
         // ============================================================
-        useLogStore.getState().info('RENDER', '[DIAG-7] エンコーダー flush 開始', {
+        logInfo('[DIAG-7] エンコーダー flush 開始', {
           audioEncoderOutputChunks,
           audioEncoderOutputBytes,
           audioEncoderSkippedChunks,
           audioEncoderClippedChunks,
           audioEncoderClippedDurationMs: Math.round(audioEncoderClippedDurationUs / 1000),
+          audioEncoderPaddedChunks,
+          audioEncoderPaddedSamples,
           audioEncoderState: audioEncoder.state,
           audioEncoderQueueSize: audioEncoder.encodeQueueSize,
           videoEncoderState: videoEncoder.state,
           videoEncoderQueueSize: videoEncoder.encodeQueueSize,
+          encodedVideoEndUs,
+          muxedAudioEndUs,
+          exportDurationUs: Number.isFinite(exportDurationUs) ? exportDurationUs : null,
           offlineAudioDone,
         });
         await videoEncoder.flush();
@@ -1958,6 +2448,10 @@ export function useExport(): UseExportReturn {
             skippedChunks: audioEncoderSkippedChunks,
             clippedChunks: audioEncoderClippedChunks,
             totalClippedDurationMs: Math.round(audioEncoderClippedDurationUs / 1000),
+            paddedChunks: audioEncoderPaddedChunks,
+            paddedSamples: audioEncoderPaddedSamples,
+            muxedAudioEndUs,
+            encodedVideoEndUs,
           });
         } catch (flushErr) {
           useLogStore.getState().error('RENDER', '[DIAG-7c] AudioEncoder flush 失敗', {
@@ -1966,17 +2460,45 @@ export function useExport(): UseExportReturn {
           });
         }
 
+        if (Number.isFinite(exportDurationUs)) {
+          const audioVideoDiffUs = Math.abs(muxedAudioEndUs - encodedVideoEndUs);
+          const audioExportDiffUs = Math.abs(muxedAudioEndUs - exportDurationUs);
+          const videoExportDiffUs = Math.abs(encodedVideoEndUs - exportDurationUs);
+          const exceedsDurationThreshold =
+            audioVideoDiffUs > DURATION_DIFF_THRESHOLD_US ||
+            audioExportDiffUs > DURATION_DIFF_THRESHOLD_US ||
+            videoExportDiffUs > DURATION_DIFF_THRESHOLD_US;
+          const durationPayload = {
+            exportDurationUs,
+            muxedAudioEndUs,
+            encodedVideoEndUs,
+            audioVideoDiffMs: Math.round(audioVideoDiffUs) / 1000,
+            audioExportDiffMs: Math.round(audioExportDiffUs) / 1000,
+            videoExportDiffMs: Math.round(videoExportDiffUs) / 1000,
+          };
+          if (exceedsDurationThreshold) {
+            useLogStore.getState().warn('RENDER', '[DIAG-DURATION-1] AAC後 duration 差分警告', durationPayload);
+          } else {
+            useLogStore.getState().info('RENDER', '[DIAG-DURATION-1] AAC後 duration 差分確認', durationPayload);
+          }
+        }
+
         // ============================================================
         // [DIAG-8] Muxer finalize
         // ============================================================
         muxer.finalize();
-        useLogStore.getState().info('RENDER', '[DIAG-8] Muxer finalize 完了', {
+        logInfo('[DIAG-8] Muxer finalize 完了', {
           bufferByteLength: muxer.target.buffer.byteLength,
           audioEncoderOutputChunks,
           audioEncoderOutputBytes,
           audioEncoderSkippedChunks,
           audioEncoderClippedChunks,
           audioEncoderClippedDurationMs: Math.round(audioEncoderClippedDurationUs / 1000),
+          audioEncoderPaddedChunks,
+          audioEncoderPaddedSamples,
+          muxedAudioEndUs,
+          encodedVideoEndUs,
+          exportDurationUs: Number.isFinite(exportDurationUs) ? exportDurationUs : null,
         });
 
         // Canvasストリームを停止
@@ -1997,13 +2519,99 @@ export function useExport(): UseExportReturn {
         // バッファ取得とBlob作成
         const { buffer } = muxer.target;
 
+        if (Number.isFinite(exportDurationUs)) {
+          const muxDurationSummary = inspectMp4Durations(buffer);
+          if (!muxDurationSummary) {
+            throw new Error(`MP4ファイルからduration情報を読み取れませんでした。mux 処理に問題がある可能性があります (bufferBytes: ${buffer.byteLength})`);
+          }
+
+          const {
+            containerDurationUs,
+            videoDurationUs,
+            audioDurationUs,
+          } = muxDurationSummary;
+
+          if (
+            containerDurationUs == null ||
+            videoDurationUs == null ||
+            audioDurationUs == null
+          ) {
+            const missingDurationPayload = {
+              exportDurationUs,
+              bufferBytes: buffer.byteLength,
+              containerDurationUs,
+              videoDurationUs,
+              audioDurationUs,
+            };
+            useLogStore
+              .getState()
+              .error('RENDER', '[DIAG-DURATION-2] mux後 duration 欠落', missingDurationPayload);
+            throw new Error(
+              `mux 後の duration 情報に欠落があります (containerDurationUs: ${containerDurationUs}, videoDurationUs: ${videoDurationUs}, audioDurationUs: ${audioDurationUs})`,
+            );
+          }
+
+          const videoTrackDurationUs = videoDurationUs;
+          const audioTrackDurationUs = audioDurationUs;
+          const audioVideoDiffUs = Math.abs(audioTrackDurationUs - videoTrackDurationUs);
+          const audioContainerDiffUs = Math.abs(audioTrackDurationUs - containerDurationUs);
+          const videoContainerDiffUs = Math.abs(videoTrackDurationUs - containerDurationUs);
+          const containerExportDiffUs = Math.abs(containerDurationUs - exportDurationUs);
+          const exceedsMuxDurationThreshold =
+            audioVideoDiffUs > DURATION_DIFF_THRESHOLD_US ||
+            audioContainerDiffUs > DURATION_DIFF_THRESHOLD_US ||
+            videoContainerDiffUs > DURATION_DIFF_THRESHOLD_US ||
+            containerExportDiffUs > DURATION_DIFF_THRESHOLD_US;
+
+          const muxDurationPayload = {
+            exportDurationUs,
+            containerDurationUs,
+            videoTrackDurationUs,
+            audioTrackDurationUs,
+            audioVideoDiffMs: Math.round(audioVideoDiffUs) / 1000,
+            audioContainerDiffMs: Math.round(audioContainerDiffUs) / 1000,
+            videoContainerDiffMs: Math.round(videoContainerDiffUs) / 1000,
+            containerExportDiffMs: Math.round(containerExportDiffUs) / 1000,
+          };
+
+          if (exceedsMuxDurationThreshold) {
+            useLogStore.getState().error('RENDER', '[DIAG-DURATION-2] mux後 duration 差分異常', muxDurationPayload);
+            throw new Error(
+              `mux 後の duration 差分が閾値を超えました (audio-video: ${Math.round(audioVideoDiffUs) / 1000}ms, container-export: ${Math.round(containerExportDiffUs) / 1000}ms)`,
+            );
+          }
+
+          useLogStore.getState().info('RENDER', '[DIAG-DURATION-2] mux後 duration 差分確認', muxDurationPayload);
+        }
+
         if (buffer.byteLength > 0) {
+          exportFinalizingRef.current = true;
           const blob = new Blob([buffer], { type: 'video/mp4' });
-          const url = URL.createObjectURL(blob);
+          if (blob.size <= 0) {
+            throw new Error('書き出し結果が空です');
+          }
+          logInfo('[DIAG-BLOB] export blob created', {
+            blobSize: blob.size,
+            blobType: blob.type,
+          });
+          let url: string;
+          try {
+            url = URL.createObjectURL(blob);
+          } catch {
+            throw new Error('保存用URLの作成に失敗しました');
+          }
+          try {
+            const metadata = await probeExportBlobUrl(url);
+            logInfo('[DIAG-BLOB] export blob metadata loaded', metadata);
+          } catch (error) {
+            logWarn('[DIAG-BLOB] export blob metadata probe failed', {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
           // ============================================================
           // [DIAG-9] エクスポート最終結果
           // ============================================================
-          useLogStore.getState().info('RENDER', '[DIAG-9] エクスポート完了 最終結果', {
+          logInfo('[DIAG-9] エクスポート完了 最終結果', {
             fileSizeBytes: buffer.byteLength,
             fileSizeMB: (buffer.byteLength / 1024 / 1024).toFixed(2),
             audioEncoderOutputChunks,
@@ -2011,15 +2619,87 @@ export function useExport(): UseExportReturn {
             audioEncoderSkippedChunks,
             audioEncoderClippedChunks,
             audioEncoderClippedDurationMs: Math.round(audioEncoderClippedDurationUs / 1000),
+            audioEncoderPaddedChunks,
+            audioEncoderPaddedSamples,
+            muxedAudioEndUs,
+            encodedVideoEndUs,
+            exportDurationUs: Number.isFinite(exportDurationUs) ? exportDurationUs : null,
             audioDataPresent: audioEncoderOutputChunks > 0,
             offlineAudioDone,
           });
-          setExportUrl(url);
-          setExportExt('mp4');
-          onRecordingStop(url, 'mp4');
+          logInfo('[DIAG-10] export URL 作成完了', {
+            blobSize: blob.size,
+            urlCreated: Boolean(url),
+            cancelReason: exportCancelReasonRef.current,
+            phase: exportPhaseRef.current,
+          });
+          logInfo('[EXPORT-FSM] transition', {
+            from: exportPhaseRef.current,
+            to: exportPhaseRef.current,
+            reason: 'url created',
+            cancelReason: exportCancelReasonRef.current,
+            hasExportUrl: Boolean(exportUrl),
+          });
+          try {
+            const cancelReasonAtUrl = exportCancelReasonRef.current as ExportCancelReason;
+            if (cancelReasonAtUrl === 'user') {
+              // blob が正常に生成されている場合は、古い cancelReason='user' を無視して完了扱いに復旧する。
+              // stopAll() → stopWebCodecsExport({ reason: 'user' }) の誤呼び出しで cancelReason が汚染された場合の保険。
+              if (blob.size > 0) {
+                logWarn('[EXPORT-FSM] transition', {
+                  from: exportPhaseRef.current,
+                  to: exportPhaseRef.current,
+                  reason: 'recovered from stale user-cancel — valid export result will be delivered',
+                  cancelReason: cancelReasonAtUrl,
+                  blobSize: blob.size,
+                  hasExportUrl: Boolean(exportUrl),
+                });
+                exportCancelReasonRef.current = 'none';
+              } else {
+                URL.revokeObjectURL(url);
+                logWarn('[EXPORT-FSM] transition', {
+                  from: exportPhaseRef.current,
+                  to: exportPhaseRef.current,
+                  reason: 'callback suppressed',
+                  cancelReason: cancelReasonAtUrl,
+                  hasExportUrl: Boolean(exportUrl),
+                });
+                return;
+              }
+            }
+            exportPhaseRef.current = 'completed';
+            exportCompletedRef.current = true;
+            logInfo('[EXPORT-FSM] invoking onRecordingStop', {
+              urlPresent: Boolean(url),
+              ext: 'mp4',
+            });
+            const callbackDelivered = notifyRecordingStop(url, 'mp4', {
+              source: 'webcodecs',
+              blobSizeBytes: blob.size,
+              signalAborted: signal.aborted,
+            });
+            if (!callbackDelivered) {
+              exportCompletedRef.current = false;
+              URL.revokeObjectURL(url);
+              return;
+            }
+            setExportUrl(url);
+            setExportExt('mp4');
+            logInfo('[EXPORT-FSM] transition', {
+              from: 'completed',
+              to: 'completed',
+              reason: 'ui exportUrl set',
+              cancelReason: exportCancelReasonRef.current,
+              hasExportUrl: true,
+            });
+          } catch (error) {
+            exportCompletedRef.current = false;
+            exportPhaseRef.current = 'failed';
+            URL.revokeObjectURL(url);
+            throw error;
+          }
         } else {
-          useLogStore.getState().warn('RENDER', 'エクスポートバッファが空');
-          onRecordingError?.('エクスポートに失敗しました。書き出しデータが空です。');
+          throw new Error('書き出し結果が空です');
         }
 
       } catch (err) {
@@ -2027,18 +2707,42 @@ export function useExport(): UseExportReturn {
           signal.aborted ||
           (err as any)?.name === 'AbortError' ||
           (err as any)?.message?.includes('Aborted');
+        const cancelReason = exportCancelReasonRef.current as ExportCancelReason;
+        exportCancelReasonRef.current = isAbort ? cancelReason : 'error';
+        exportPhaseRef.current = isAbort ? 'cancelled' : 'failed';
+
+        if (!hasNotifiedRecordingStop) {
+          logError('recording stop callback was not delivered before export finalization failed');
+        }
 
         if (!isAbort) {
-          useLogStore.getState().error('RENDER', 'エクスポート失敗', {
+          logError('[EXPORT-FSM] transition', {
+            from: 'finalizing',
+            to: 'failed',
+            reason: 'failed',
+            cancelReason,
+            hasExportUrl: Boolean(exportUrl),
+          });
+          logError('export finalize failed', {
             error: err instanceof Error ? err.message : String(err)
           });
           console.error('Export failed:', err);
           onRecordingError?.(
-            err instanceof Error ? `エクスポートに失敗しました: ${err.message}` : 'エクスポートに失敗しました'
+            err instanceof Error ? err.message : '動画ファイルの作成に失敗しました'
           );
+        } else if (cancelReason === 'user') {
+          logInfo('エクスポートが中断されました');
+          if (!silentAbortRef.current) {
+            onRecordingError?.('エクスポートが中断されました');
+          }
+        } else if (cancelReason === 'superseded' || cancelReason === 'unmount') {
+          logInfo('エクスポートが後続処理のため中断されました', {
+            cancelReason,
+          });
+        } else if (finalizeRequestedRef.current || completionRequestedRef.current) {
+          logInfo('正常終了要求後の中断を検出しましたが、完了処理を優先します');
         } else {
-          useLogStore.getState().info('RENDER', 'エクスポートが中断されました');
-          onRecordingError?.('エクスポートが中断されました');
+          logInfo('エクスポートが中断されました');
         }
       } finally {
         if (canvasFramePumpTimer) {
@@ -2060,11 +2764,28 @@ export function useExport(): UseExportReturn {
         videoReaderRef.current = null;
         audioReaderRef.current = null;
         recorderRef.current = null;
+        exportSessionIdRef.current = null;
         completionRequestedRef.current = false;
+        finalizeRequestedRef.current = false;
+        exportFinalizingRef.current = false;
+        exportCancelReasonRef.current = 'none';
+        exportPhaseRef.current = 'idle';
+        silentAbortRef.current = false;
         setIsProcessing(false);
+        // キャンバスをプレビューサイズへ戻す（プレビュー描画を軽量に保つ）。
+        useCanvasStore.getState().endExportMode();
+        const { previewWidth, previewHeight } = useCanvasStore.getState();
+        if (canvasRef.current) {
+          if (canvasRef.current.width !== previewWidth) {
+            canvasRef.current.width = previewWidth;
+          }
+          if (canvasRef.current.height !== previewHeight) {
+            canvasRef.current.height = previewHeight;
+          }
+        }
       }
     },
-    [completeExport, stopExport]
+    [completeExport, stopExport, updatePreparationStep]
   );
 
   // エクスポートURLクリア
@@ -2076,19 +2797,18 @@ export function useExport(): UseExportReturn {
     setExportExt(null);
   }, [exportUrl]);
 
-  return {
-    isProcessing,
-    setIsProcessing,
-    exportUrl,
-    setExportUrl,
-    exportExt,
-    setExportExt,
-    recorderRef,
-    startExport, // 既存I/F維持
-    completeExport,
-    stopExport, // 新規追加（必要であれば使う）
-    clearExportUrl,
+    return {
+      isProcessing,
+      setIsProcessing,
+      exportUrl,
+      setExportUrl,
+      exportExt,
+      setExportExt,
+      recorderRef,
+      startExport, // 既存I/F維持
+      completeExport,
+      stopExport, // 新規追加（必要であれば使う）
+      clearExportUrl,
+    };
   };
 }
-
-export default useExport;

@@ -84,6 +84,33 @@ input[type="number"] {
   animation: bounce-short 0.5s ease-in-out;
 }
 
+@keyframes preview-capture-press {
+  0% {
+    transform: scale(1);
+    filter: brightness(1) saturate(1);
+    box-shadow: 0 0 0 0 rgba(167, 243, 208, 0), 0 0 0 0 rgba(16, 185, 129, 0);
+  }
+  30% {
+    transform: scale(0.93);
+    filter: brightness(0.8) saturate(1.12);
+    box-shadow: 0 0 0 5px rgba(167, 243, 208, 0.38), 0 0 22px 3px rgba(16, 185, 129, 0.42);
+  }
+  65% {
+    transform: scale(0.97);
+    filter: brightness(0.9) saturate(1.06);
+    box-shadow: 0 0 0 3px rgba(167, 243, 208, 0.24), 0 0 16px 2px rgba(16, 185, 129, 0.28);
+  }
+  100% {
+    transform: scale(1);
+    filter: brightness(1) saturate(1);
+    box-shadow: 0 0 0 0 rgba(167, 243, 208, 0), 0 0 0 0 rgba(16, 185, 129, 0);
+  }
+}
+
+.animate-preview-capture-press {
+  animation: preview-capture-press 0.42s ease-out;
+}
+
 @keyframes ai-modal-sheet-up {
   from {
     transform: translateY(24px);

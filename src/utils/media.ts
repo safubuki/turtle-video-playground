@@ -6,6 +6,7 @@
 
 import type { MediaItem } from '../types';
 import { useLogStore } from '../stores/logStore';
+import { MAX_CANVAS_WIDTH } from '../constants';
 
 /**
  * ID生成用カウンター（同一ミリ秒内での重複を防止）
@@ -41,14 +42,22 @@ export function getMediaType(file: File): 'video' | 'image' | 'audio' | null {
  * @param file - アップロードされたファイル
  * @returns 新しいMediaItem
  */
-export function createMediaItem(file: File): MediaItem {
+export async function createMediaItem(file: File): Promise<MediaItem> {
   const isImage = file.type.startsWith('image');
+  const fileData = typeof file.arrayBuffer === 'function'
+    ? await file.arrayBuffer()
+    : await new Response(file).arrayBuffer();
+  const stableFile = new File([fileData], file.name, {
+    type: file.type,
+    lastModified: file.lastModified,
+  });
   useLogStore.getState().debug('MEDIA', 'メディアアイテムを作成', { fileName: file.name, type: isImage ? 'image' : 'video', size: file.size });
   return {
     id: generateId(),
-    file,
+    file: stableFile,
+    fileData,
     type: isImage ? 'image' : 'video',
-    url: URL.createObjectURL(file),
+    url: URL.createObjectURL(stableFile),
     volume: 1.0,
     isMuted: false,
     fadeIn: false,
@@ -157,7 +166,7 @@ export function validateScale(scale: number, min: number = 0.5, max: number = 3.
  * @param limit - 上限/下限
  * @returns 検証された位置値
  */
-export function validatePosition(position: number, limit: number = 1280): number {
+export function validatePosition(position: number, limit: number = MAX_CANVAS_WIDTH): number {
   if (isNaN(position)) return 0;
   return Math.max(-limit, Math.min(limit, position));
 }

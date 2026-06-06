@@ -5,6 +5,7 @@
  */
 import React, { useRef, useEffect, useCallback } from 'react';
 import type { MediaItem } from '../../types';
+import { useCanvasStore } from '../../stores/canvasStore';
 
 interface MiniPreviewProps {
   item: MediaItem;
@@ -13,13 +14,13 @@ interface MiniPreviewProps {
 
 const MINI_CANVAS_WIDTH = 96;
 const MINI_CANVAS_HEIGHT = 54;
-const ORIGINAL_WIDTH = 1280;
 
 /**
  * ミニプレビューコンポーネント
  * トランスフォームパネル内に埋め込み表示
  */
 const MiniPreview: React.FC<MiniPreviewProps> = ({ item, mediaElement }) => {
+  const projectCanvasWidth = useCanvasStore((s) => s.width);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const animationRef = useRef<number | null>(null);
@@ -53,7 +54,7 @@ const MiniPreview: React.FC<MiniPreviewProps> = ({ item, mediaElement }) => {
     ctx.fillRect(0, 0, MINI_CANVAS_WIDTH, MINI_CANVAS_HEIGHT);
 
     // スケール比率 (プレビュー枠サイズ / オリジナルサイズ)
-    const previewRatio = MINI_CANVAS_WIDTH / ORIGINAL_WIDTH;
+    const previewRatio = MINI_CANVAS_WIDTH / projectCanvasWidth;
 
     // メディアの元サイズを取得
     let elemW = 0;
@@ -104,7 +105,7 @@ const MiniPreview: React.FC<MiniPreviewProps> = ({ item, mediaElement }) => {
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
     ctx.lineWidth = 1;
     ctx.strokeRect(0, 0, MINI_CANVAS_WIDTH, MINI_CANVAS_HEIGHT);
-  }, [mediaElement]); // itemへの依存を削除
+  }, [mediaElement, projectCanvasWidth]); // itemへの依存を削除
 
   useEffect(() => {
     itemRef.current = item;

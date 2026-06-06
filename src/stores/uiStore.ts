@@ -24,6 +24,7 @@ interface UIState {
 
   // Processing & Export
   isProcessing: boolean;
+  isPreviewPlaying: boolean;
   isLoading: boolean;  // リソース読み込み中フラグ
   exportUrl: string | null;
   exportExt: ExportFormat;
@@ -51,6 +52,7 @@ interface UIState {
 
   // Actions - Processing & Export
   setProcessing: (processing: boolean) => void;
+  setPreviewPlaying: (playing: boolean) => void;
   setLoading: (loading: boolean) => void;
   setExportUrl: (url: string | null) => void;
   setExportExt: (ext: ExportFormat) => void;
@@ -87,6 +89,7 @@ export const useUIStore = create<UIState>()(
       isPlaying: false,
       currentTime: 0,
       isProcessing: false,
+      isPreviewPlaying: false,
       isLoading: false,
       exportUrl: null,
       exportExt: 'mp4' as const,
@@ -179,6 +182,10 @@ export const useUIStore = create<UIState>()(
         set({ isProcessing: processing });
       },
 
+      setPreviewPlaying: (playing) => {
+        set({ isPreviewPlaying: playing });
+      },
+
       setLoading: (loading) => {
         set({ isLoading: loading });
       },
@@ -265,6 +272,7 @@ export const useUIStore = create<UIState>()(
           isPlaying: false,
           currentTime: 0,
           isProcessing: false,
+          isPreviewPlaying: false,
           exportUrl: null,
           exportExt: 'mp4' as const,
           showAiModal: false,

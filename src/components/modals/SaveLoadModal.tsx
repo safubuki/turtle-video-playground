@@ -4,33 +4,47 @@
  * @description 保存・読み込み・削除機能を提供するモーダル。
  */
 
-import { useEffect, useRef, useState } from 'react';
-import { X, Save, FolderOpen, Trash2, Clock, AlertTriangle, Timer, Image, CircleHelp } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { X, Save, FolderOpen, Trash2, Clock, AlertTriangle, Timer, Image, CircleHelp, RefreshCw } from 'lucide-react';
+import type { AppFlavor } from '../../app/resolveAppFlavor';
+import { getSaveLoadRuntimeGuidance } from '../../app/appFlavorUi';
 import {
   useProjectStore,
-  isStorageQuotaError,
   getProjectStoreErrorMessage,
+  type SaveFailureCategory,
 } from '../../stores/projectStore';
+import type { SaveRuntime } from '../turtle-video/saveRuntime';
 import { useMediaStore } from '../../stores/mediaStore';
 import { useAudioStore } from '../../stores/audioStore';
 import { useCaptionStore } from '../../stores/captionStore';
 import { useLogStore } from '../../stores/logStore';
+import { useUIStore } from '../../stores/uiStore';
 import type { SaveSlot } from '../../utils/indexedDB';
 import {
   getAutoSaveInterval,
   setAutoSaveInterval,
   type AutoSaveIntervalOption,
 } from '../../hooks/useAutoSave';
-import { CANVAS_WIDTH, CANVAS_HEIGHT } from '../../constants';
+import { useCanvasStore } from '../../stores/canvasStore';
 import { useDisableBodyScroll } from '../../hooks/useDisableBodyScroll';
+import type { ProjectPersistenceHealthSnapshot } from '../../stores/projectPersistenceHealth';
 
 interface SaveLoadModalProps {
   isOpen: boolean;
   onClose: () => void;
   onToast: (message: string, type?: 'success' | 'error') => void;
+  onBeforeLoadProject?: () => void;
+  appFlavor: AppFlavor;
+  saveRuntime: SaveRuntime;
 }
 
-type ModalMode = 'menu' | 'confirmLoad' | 'confirmDelete' | 'selectSlot' | 'confirmAutoDeleteForSave';
+type ModalMode =
+  | 'menu'
+  | 'confirmLoad'
+  | 'confirmDelete'
+  | 'selectSlot'
+  | 'confirmAutoDeleteForSave'
+  | 'confirmResetDbForSave';
 
 /** 自動保存間隔のオプション */
 const AUTO_SAVE_OPTIONS: { value: AutoSaveIntervalOption; label: string }[] = [
@@ -43,11 +57,12 @@ const AUTO_SAVE_OPTIONS: { value: AutoSaveIntervalOption; label: string }[] = [
 /**
  * 日時を読みやすい形式にフォーマット
  */
-function formatDateTime(isoString: string | null): string {
+function formatDateTime(isoString: string | null, nowMs: number = Date.now()): string {
   if (!isoString) return '---';
   const date = new Date(isoString);
-  const now = new Date();
-  const diff = now.getTime() - date.getTime();
+  const savedAt = date.getTime();
+  if (!Number.isFinite(savedAt)) return '---';
+  const diff = Math.max(nowMs - savedAt, 0);
   
   // 1分未満
   if (diff < 60 * 1000) {
@@ -72,12 +87,69 @@ function formatDateTime(isoString: string | null): string {
   });
 }
 
-export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModalProps) {
+function formatExactDateTime(isoString: string | null): string {
+  if (!isoString) return '---';
+  const date = new Date(isoString);
+  if (!Number.isFinite(date.getTime())) return '---';
+  // 保存モーダルは日本語UI前提のため、相対表示と同じく日本語ロケールでそろえる。
+  return date.toLocaleString('ja-JP', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+function getPersistenceModeLabel(saveHealth: ProjectPersistenceHealthSnapshot | null): string {
+  if (!saveHealth) return '未取得';
+  if (saveHealth.persistenceMode === 'persistent') return '永続化済み';
+  if (saveHealth.persistenceMode === 'best-effort') return 'best-effort';
+  return '情報取得不可';
+}
+
+function getLaunchContextLabel(saveHealth: ProjectPersistenceHealthSnapshot | null): string {
+  if (!saveHealth) return '未取得';
+  if (saveHealth.launchContext === 'standalone') return 'ホーム画面追加';
+  if (saveHealth.launchContext === 'browser-tab') return '通常タブ';
+  return '不明';
+}
+
+function getSaveFailureCategoryLabel(category: SaveFailureCategory | undefined): string {
+  switch (category) {
+    case 'storage-quota':
+      return '保存容量';
+    case 'indexeddb-open':
+      return '保存DBの起動';
+    case 'indexeddb-transaction':
+      return '保存DBの書き込み';
+    case 'media-serialization':
+      return '素材読み込み';
+    case 'unknown':
+    default:
+      return '未分類';
+  }
+}
+
+export default function SaveLoadModal({ isOpen, onClose, onToast, onBeforeLoadProject, appFlavor, saveRuntime }: SaveLoadModalProps) {
+  const canvasWidth = useCanvasStore((s) => s.width);
+  const canvasHeight = useCanvasStore((s) => s.height);
   const [mode, setMode] = useState<ModalMode>('menu');
   const [selectedSlot, setSelectedSlot] = useState<SaveSlot | null>(null);
   const [autoSaveInterval, setAutoSaveIntervalState] = useState<AutoSaveIntervalOption>(getAutoSaveInterval);
   const [showHelp, setShowHelp] = useState(false);
+  const [relativeTimeNowMs, setRelativeTimeNowMs] = useState<number>(() => Date.now());
+  const onCloseRef = useRef(onClose);
   const showHelpRef = useRef(false);
+  const supportsShowSaveFilePicker = useMemo(
+    () => saveRuntime.getPlatformCapabilities().supportsShowSaveFilePicker,
+    [saveRuntime],
+  );
+  const runtimeGuidance = useMemo(
+    () => getSaveLoadRuntimeGuidance({ appFlavor, supportsShowSaveFilePicker }),
+    [appFlavor, supportsShowSaveFilePicker],
+  );
   const modalHistoryIdRef = useRef<string | null>(null);
   const closedByPopstateRef = useRef(false);
   const sheetScrollRef = useRef<HTMLDivElement>(null);
@@ -100,12 +172,22 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
     isSaving,
     isLoading,
     lastAutoSave,
+    lastAutoSaveActivityAt,
     lastManualSave,
+    autoSaveRuntimeStatus,
+    lastSaveFailure,
+    saveHealth,
+    saveHealthError,
     saveProjectManual,
     loadProjectFromSlot,
     deleteAllSaves,
     deleteAutoSaveOnly,
+    resetSaveDatabase,
     refreshSaveInfo,
+    refreshSaveHealth,
+    requestAutoSaveRestart,
+    clearLastSaveFailure,
+    clearSaveHealthError,
   } = useProjectStore();
   
   // 各ストアからデータを取得
@@ -125,29 +207,107 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
   const restoreCaptions = useCaptionStore((s) => s.restoreFromSave);
   
   // 現在編集中のデータがあるかどうか
+  const isPreviewPlaying = useUIStore((s) => s.isPreviewPlaying);
   const hasCurrentData = mediaItems.length > 0 || bgm !== null || narrations.length > 0 || captions.length > 0;
   
   // 保存データがあるかどうか
   const hasAutoSave = lastAutoSave !== null;
   const hasManualSave = lastManualSave !== null;
   const hasSaveData = hasAutoSave || hasManualSave;
+  const autoSaveIntervalMs = autoSaveInterval * 60 * 1000;
+  const lastAutoSaveActivityLabel = useMemo(() => {
+    if (!lastAutoSaveActivityAt) return '---';
+    if (autoSaveRuntimeStatus === 'paused-processing') {
+      return formatDateTime(lastAutoSaveActivityAt, relativeTimeNowMs);
+    }
+    if (autoSaveInterval > 0) {
+      const savedAt = new Date(lastAutoSaveActivityAt).getTime();
+      if (Number.isFinite(savedAt) && relativeTimeNowMs - savedAt >= autoSaveIntervalMs) {
+        return '要確認';
+      }
+    }
+    return formatDateTime(lastAutoSaveActivityAt, relativeTimeNowMs);
+  }, [autoSaveInterval, autoSaveIntervalMs, autoSaveRuntimeStatus, lastAutoSaveActivityAt, relativeTimeNowMs]);
+  const showAutoSaveRestartButton = useMemo(() => {
+    if (autoSaveInterval === 0) return false;
+    if (autoSaveRuntimeStatus === 'paused-processing') return false;
+    if (autoSaveRuntimeStatus === 'failed') return true;
+    if (!lastAutoSaveActivityAt) return false;
+    const activityAt = new Date(lastAutoSaveActivityAt).getTime();
+    if (!Number.isFinite(activityAt)) return false;
+    return relativeTimeNowMs - activityAt >= autoSaveIntervalMs;
+  }, [autoSaveInterval, autoSaveIntervalMs, autoSaveRuntimeStatus, lastAutoSaveActivityAt, relativeTimeNowMs]);
+  const autoSaveStatusMessage = useMemo(() => {
+    if (autoSaveInterval === 0) return '自動保存はオフです。';
+    if (autoSaveRuntimeStatus === 'running') return '自動保存を実行中です。';
+    if (autoSaveRuntimeStatus === 'paused-processing') return '書き出し中のため自動保存を一時停止しています。';
+    if (autoSaveRuntimeStatus === 'failed') return '直近の自動保存が失敗しました。必要なら再始動してください。';
+    if (autoSaveRuntimeStatus === 'saved') return '直近の自動保存は正常に完了しました。';
+    if (autoSaveRuntimeStatus === 'skipped-nochange') return '変更がないため自動保存はスキップされました。';
+    if (autoSaveRuntimeStatus === 'skipped-empty') return '保存対象がないため自動保存は待機中です。';
+    if (showAutoSaveRestartButton) return '自動保存タイマーが止まっている可能性があります。再始動してください。';
+    return '自動保存タイマーを待機中です。';
+  }, [autoSaveInterval, autoSaveRuntimeStatus, showAutoSaveRestartButton]);
+
+  const failureActionLabel = useMemo(() => {
+    switch (lastSaveFailure?.recoveryAction) {
+      case 'delete-auto-and-retry':
+        return '自動保存を削除して再試行';
+      case 'reset-database-and-retry':
+        return '保存DBを初期化して再試行';
+      case 'inspect-media':
+        return '素材データとログの確認が必要';
+      case 'retry':
+        return '時間を置いて再試行';
+      default:
+        return null;
+    }
+  }, [lastSaveFailure]);
+
+  const saveHealthUsageLabel = useMemo(() => {
+    if (!saveHealth?.storageEstimate) return '---';
+    const usageMb = Math.round((saveHealth.storageEstimate.usage / 1024 / 1024) * 10) / 10;
+    const quotaMb = Math.round((saveHealth.storageEstimate.quota / 1024 / 1024) * 10) / 10;
+    if (!(saveHealth.storageEstimate.quota > 0)) {
+      return `${usageMb}MB`;
+    }
+    return `${usageMb}MB / ${quotaMb}MB`;
+  }, [saveHealth]);
   
   // 初回表示時に保存情報を更新
   useEffect(() => {
     if (isOpen) {
-      refreshSaveInfo();
+      if (!isPreviewPlaying) {
+        void refreshSaveInfo();
+        void refreshSaveHealth(saveRuntime.getPersistenceHealth);
+      }
       setMode('menu');
       setSelectedSlot(null);
       setAutoSaveIntervalState(getAutoSaveInterval());
       setShowHelp(false);
+      setRelativeTimeNowMs(Date.now());
     }
-  }, [isOpen, refreshSaveInfo]);
+  }, [isOpen, isPreviewPlaying, refreshSaveHealth, refreshSaveInfo, saveRuntime]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const timerId = window.setInterval(() => {
+      setRelativeTimeNowMs(Date.now());
+    }, 30_000);
+    return () => {
+      clearInterval(timerId);
+    };
+  }, [isOpen]);
 
   useEffect(() => {
     if (mode !== 'menu') {
       setShowHelp(false);
     }
   }, [mode]);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     showHelpRef.current = showHelp;
@@ -174,7 +334,7 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
         return;
       }
       closedByPopstateRef.current = true;
-      onClose();
+      onCloseRef.current();
     };
 
     window.addEventListener('popstate', handlePopState);
@@ -195,7 +355,7 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
       modalHistoryIdRef.current = null;
       closedByPopstateRef.current = false;
     };
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   const resetTouchTracking = () => {
     touchStartXRef.current = null;
@@ -240,7 +400,7 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
 
   const handleSheetTouchEnd = () => {
     if (swipeCloseEligibleRef.current && touchDeltaYRef.current > 72) {
-      onClose();
+      onCloseRef.current();
     }
     resetTouchTracking();
   };
@@ -254,40 +414,62 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
     // 設定反映のためにページリロードが必要な旨を通知
     onToast(`自動保存間隔を${value === 0 ? 'オフ' : `${value}分`}に変更しました`, 'success');
   };
+
+  const handleRestartAutoSave = () => {
+    requestAutoSaveRestart();
+    onToast('自動保存を再始動しました', 'success');
+  };
   
   /**
    * 単色画像を生成してダウンロード
    */
   const handleGenerateColorImage = (color: 'black' | 'white') => {
     const canvas = document.createElement('canvas');
-    canvas.width = CANVAS_WIDTH;
-    canvas.height = CANVAS_HEIGHT;
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
     const ctx = canvas.getContext('2d');
     if (!ctx) {
       onToast('画像の生成に失敗しました', 'error');
       return;
     }
-    
+
     ctx.fillStyle = color === 'black' ? '#000000' : '#FFFFFF';
-    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-    
+    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+
     // PNGとしてダウンロード
-    canvas.toBlob((blob) => {
+    canvas.toBlob(async (blob) => {
       if (!blob) {
         onToast('画像の生成に失敗しました', 'error');
         return;
       }
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${color === 'black' ? '黒' : '白'}画像_${CANVAS_WIDTH}x${CANVAS_HEIGHT}.png`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      // ログを記録
-      useLogStore.getState().info('MEDIA', `${color === 'black' ? '黒' : '白'}画像を生成 (${CANVAS_WIDTH}x${CANVAS_HEIGHT})`);
-      onToast(`${color === 'black' ? '黒' : '白'}画像を保存しました`, 'success');
+
+      try {
+        const result = await saveRuntime.saveBlobWithClientFileStrategy({
+          blob,
+          descriptor: {
+            filename: `${color === 'black' ? '黒' : '白'}画像_${canvasWidth}x${canvasHeight}.png`,
+            mimeType: 'image/png',
+            description: 'PNG 画像',
+          },
+          supportsShowSaveFilePicker,
+        });
+
+        useLogStore.getState().info('MEDIA', `${color === 'black' ? '黒' : '白'}画像を生成 (${canvasWidth}x${canvasHeight})`, {
+          saveStrategy: result.strategy,
+        });
+        onToast(
+          result.strategy === 'file-picker'
+            ? `${color === 'black' ? '黒' : '白'}画像を保存しました`
+            : `${color === 'black' ? '黒' : '白'}画像の保存を開始しました`,
+          'success',
+        );
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          onToast('画像の保存をキャンセルしました', 'error');
+          return;
+        }
+        onToast('画像の保存に失敗しました', 'error');
+      }
     }, 'image/png');
   };
   
@@ -319,13 +501,23 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
       await executeManualSave();
     } catch (error) {
       const message = getProjectStoreErrorMessage(error);
+      const failureInfo = useProjectStore.getState().lastSaveFailure;
       useLogStore.getState().error('SYSTEM', '手動保存に失敗', { error: message });
-      if (isStorageQuotaError(error)) {
+      if (failureInfo?.recoveryAction === 'delete-auto-and-retry') {
         await refreshSaveInfo();
         setMode('confirmAutoDeleteForSave');
-      } else {
-        onToast('保存に失敗しました', 'error');
+        return;
       }
+      if (failureInfo?.recoveryAction === 'reset-database-and-retry') {
+        await refreshSaveInfo();
+        setMode('confirmResetDbForSave');
+        return;
+      }
+      if (failureInfo?.recoveryAction === 'inspect-media') {
+        onToast('保存素材の一部が壊れている可能性があります。ログ詳細を確認してください', 'error');
+        return;
+      }
+      onToast('保存に失敗しました', 'error');
     }
   };
 
@@ -336,12 +528,29 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
       await executeManualSave();
     } catch (error) {
       const message = getProjectStoreErrorMessage(error);
+      const failureInfo = useProjectStore.getState().lastSaveFailure;
       useLogStore.getState().error('SYSTEM', '自動保存削除後の手動保存に失敗', { error: message });
-      if (isStorageQuotaError(error)) {
-        onToast('自動保存を削除しても容量不足です。素材を減らして再試行してください', 'error');
+      if (failureInfo?.recoveryAction === 'reset-database-and-retry') {
+        setMode('confirmResetDbForSave');
+        return;
+      }
+      if (failureInfo?.recoveryAction === 'inspect-media') {
+        onToast('保存素材の一部が壊れている可能性があります。ログ詳細を確認してください', 'error');
       } else {
         onToast('保存に失敗しました', 'error');
       }
+      setMode('menu');
+    }
+  };
+
+  const handleSaveAfterDbReset = async () => {
+    try {
+      await resetSaveDatabase();
+      await executeManualSave();
+    } catch (error) {
+      const message = getProjectStoreErrorMessage(error);
+      useLogStore.getState().error('SYSTEM', '保存DB初期化後の手動保存に失敗', { error: message });
+      onToast('保存DBを初期化しても保存に失敗しました。ログ詳細を確認してください', 'error');
       setMode('menu');
     }
   };
@@ -383,6 +592,7 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
   // 読み込み確定
   const handleLoadConfirm = async (slot: SaveSlot) => {
     try {
+      onBeforeLoadProject?.();
       const data = await loadProjectFromSlot(slot);
       if (data) {
         // 各ストアに復元
@@ -398,7 +608,7 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
         onToast('保存データが見つかりません', 'error');
       }
       onClose();
-    } catch (error) {
+    } catch {
       useLogStore.getState().error('SYSTEM', `プロジェクト読み込みに失敗 (${slot})`);
       onToast('読み込みに失敗しました', 'error');
     }
@@ -416,7 +626,7 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
       useLogStore.getState().info('SYSTEM', '保存データを全て削除');
       onToast('削除しました', 'success');
       onClose();
-    } catch (error) {
+    } catch {
       useLogStore.getState().error('SYSTEM', '保存データ削除に失敗');
       onToast('削除に失敗しました', 'error');
     }
@@ -426,7 +636,7 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
   
   return (
     <div
-      className="fixed inset-0 z-[300] flex items-end md:items-center md:justify-center bg-black/70 md:p-4"
+      className="fixed inset-0 z-300 flex items-end md:items-center md:justify-center bg-black/70 md:p-4"
       onClick={onClose}
     >
       <div
@@ -450,6 +660,7 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
               {mode === 'confirmLoad' && '読み込み確認'}
               {mode === 'confirmDelete' && '削除確認'}
               {mode === 'confirmAutoDeleteForSave' && '容量不足の対応'}
+              {mode === 'confirmResetDbForSave' && '保存DBの復旧'}
             </h2>
             {mode === 'menu' && (
               <button
@@ -468,7 +679,7 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
             title="閉じる"
             aria-label="閉じる"
           >
-            <X className="w-[18px] h-[18px]" />
+            <X className="w-4.5 h-4.5" />
           </button>
         </div>
         
@@ -487,12 +698,16 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
                     title="ヘルプを閉じる"
                     aria-label="ヘルプを閉じる"
                   >
-                    <X className="w-[18px] h-[18px]" />
+                    <X className="w-4.5 h-4.5" />
                   </button>
                 </div>
                 <div className="space-y-3 text-xs md:text-sm text-orange-50 leading-relaxed">
                   <div className="space-y-1.5">
                     <div className="font-semibold text-orange-100">保存</div>
+                    <div className="rounded-lg border border-orange-300/30 bg-orange-500/8 px-3 py-2">
+                      <div className="text-[11px] md:text-xs font-semibold text-orange-200">現在の保存モード</div>
+                      <div className="text-sm md:text-[15px] font-bold text-orange-50">{runtimeGuidance.title}</div>
+                    </div>
                     <ul className="list-disc ml-4 space-y-1">
                       <li>保存データはブラウザ上の IndexedDB に保存されます。</li>
                       <li>ブラウザやアプリを閉じても、保存データは保持されます。</li>
@@ -500,13 +715,17 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
                       <li>自動保存は定期的に上書き保存されるため、保存データが増え続けずローカル領域を圧迫しにくい設計です。</li>
                       <li>手動保存で現在の状態を保存し、読み込みで復元できます。</li>
                       <li>保存データを削除すると、自動保存と手動保存の両方が消えます。</li>
+                      <li>{runtimeGuidance.summary}</li>
+                      {runtimeGuidance.bullets.map((bullet) => (
+                        <li key={bullet}>{bullet}</li>
+                      ))}
                     </ul>
                   </div>
                   <div className="border-t border-orange-300/35" />
                   <div className="space-y-1.5">
                     <div className="font-semibold text-orange-100">素材</div>
                     <ul className="list-disc ml-4 space-y-1">
-                      <li>素材生成では 1280x720 の黒画像・白画像を作成できます。</li>
+                      <li>素材生成では現在のプロジェクトキャンバスサイズに合わせた黒画像・白画像を作成できます。</li>
                       <li>動画のつなぎや背景用のプレースホルダー素材として利用できます。</li>
                     </ul>
                   </div>
@@ -545,9 +764,28 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
                   <Clock size={14} />
                   自動保存
                 </span>
-                <span className={hasAutoSave ? 'text-white' : 'text-gray-500'}>
-                  {formatDateTime(lastAutoSave)}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className={lastAutoSaveActivityAt ? 'text-white' : 'text-gray-500'}>
+                    {lastAutoSaveActivityLabel}
+                  </span>
+                  {showAutoSaveRestartButton && (
+                    <button
+                      type="button"
+                      onClick={handleRestartAutoSave}
+                      className="inline-flex items-center justify-center rounded-md border border-blue-500/40 bg-blue-500/10 p-1.5 text-blue-200 transition hover:border-blue-300/70 hover:bg-blue-500/20 hover:text-white"
+                      title="自動保存を再始動"
+                      aria-label="自動保存を再始動"
+                    >
+                      <RefreshCw size={14} />
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="pl-5 text-[11px] text-gray-500">
+                前回保存日時: {formatExactDateTime(lastAutoSave)}
+              </div>
+              <div className="pl-5 text-[11px] text-gray-400">
+                {autoSaveStatusMessage}
               </div>
               <div className="flex items-center justify-between text-sm">
                 <span className="text-gray-400 flex items-center gap-1">
@@ -555,10 +793,95 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
                   手動保存
                 </span>
                 <span className={hasManualSave ? 'text-white' : 'text-gray-500'}>
-                  {formatDateTime(lastManualSave)}
+                  {formatDateTime(lastManualSave, relativeTimeNowMs)}
                 </span>
               </div>
             </div>
+
+            {appFlavor === 'apple-safari' && (saveHealth || saveHealthError) && (
+              <div className="bg-gray-800 rounded-lg p-4 space-y-2">
+                <div className="flex items-center justify-between gap-3 text-sm">
+                  <span className="text-gray-400 flex items-center gap-1">
+                    <AlertTriangle size={14} />
+                    保存領域診断
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs ${saveHealth?.persistenceMode === 'persistent' ? 'text-emerald-300' : 'text-amber-300'}`}>
+                      {getPersistenceModeLabel(saveHealth)}
+                    </span>
+                    {saveHealthError && (
+                      <button
+                        type="button"
+                        className="text-xs text-red-300 hover:text-red-100 transition-colors"
+                        onClick={clearSaveHealthError}
+                      >
+                        閉じる
+                      </button>
+                    )}
+                  </div>
+                </div>
+                {saveHealth && (
+                  <>
+                    <div className="pl-5 text-[11px] text-gray-400">
+                      起動方法: {getLaunchContextLabel(saveHealth)}
+                    </div>
+                    <div className="pl-5 text-[11px] text-gray-400">
+                      推定使用量: {saveHealthUsageLabel}
+                    </div>
+                    <div className="pl-5 text-[11px] text-gray-400">
+                      {saveHealth.summary}
+                    </div>
+                    {saveHealth.warnings.length > 0 && (
+                      <ul className="pl-9 list-disc text-[11px] text-amber-200 space-y-1">
+                        {saveHealth.warnings.map((warning) => (
+                          <li key={warning}>{warning}</li>
+                        ))}
+                      </ul>
+                    )}
+                    <div className="pl-5 text-[11px] text-gray-500">
+                      プライベートブラウズは正式サポート対象外です。
+                    </div>
+                  </>
+                )}
+                {saveHealthError && (
+                  <div className="pl-5 text-[11px] text-red-200 wrap-break-word">
+                    保存領域診断の取得に失敗しました: {saveHealthError}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {lastSaveFailure && (
+              <div className="bg-red-950/35 border border-red-700/50 rounded-lg p-4 space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm font-medium text-red-200 flex items-center gap-1">
+                    <AlertTriangle size={14} />
+                    直近の保存失敗
+                  </span>
+                  <button
+                    className="text-xs text-red-300 hover:text-red-100 transition-colors"
+                    onClick={clearLastSaveFailure}
+                  >
+                    閉じる
+                  </button>
+                </div>
+                <div className="text-xs text-red-100 leading-relaxed wrap-break-word">
+                  {lastSaveFailure.reason}
+                </div>
+                <div className="text-xs text-red-200/90">
+                  分類: {getSaveFailureCategoryLabel(lastSaveFailure.category)}
+                </div>
+                <div className="text-xs text-red-200/90">
+                  推奨対応: {failureActionLabel ?? 'ログを確認して再試行'}
+                </div>
+                {lastSaveFailure.storageEstimate && lastSaveFailure.storageEstimate.quota > 0 && (
+                  <div className="text-[11px] text-red-200/80">
+                    使用量: {Math.round((lastSaveFailure.storageEstimate.usage / 1024 / 1024) * 10) / 10}MB /
+                    {` `}上限: {Math.round((lastSaveFailure.storageEstimate.quota / 1024 / 1024) * 10) / 10}MB
+                  </div>
+                )}
+              </div>
+            )}
             
             {/* ボタン */}
             <div className="space-y-3">
@@ -595,7 +918,7 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
               <div className="flex items-center gap-2 mb-3">
                 <Image size={14} className="text-gray-400" />
                 <span className="text-sm text-gray-400">素材生成</span>
-                <span className="text-xs text-gray-500">({CANVAS_WIDTH}×{CANVAS_HEIGHT}px)</span>
+                <span className="text-xs text-gray-500">({canvasWidth}×{canvasHeight}px)</span>
               </div>
               <div className="flex gap-2">
                 <button
@@ -631,7 +954,7 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
                     自動保存
                   </span>
                   <span className="text-sm text-gray-400">
-                    {formatDateTime(lastAutoSave)}
+                    {formatDateTime(lastAutoSave, relativeTimeNowMs)}
                   </span>
                 </button>
               )}
@@ -646,7 +969,7 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
                     手動保存
                   </span>
                   <span className="text-sm text-gray-400">
-                    {formatDateTime(lastManualSave)}
+                    {formatDateTime(lastManualSave, relativeTimeNowMs)}
                   </span>
                 </button>
               )}
@@ -665,7 +988,7 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
         {mode === 'confirmLoad' && (
           <div className="space-y-4">
             <div className="flex items-start gap-3 p-4 bg-yellow-900/30 border border-yellow-700/50 rounded-lg">
-              <AlertTriangle size={20} className="text-yellow-500 flex-shrink-0 mt-0.5" />
+              <AlertTriangle size={20} className="text-yellow-500 shrink-0 mt-0.5" />
               <p className="text-sm text-yellow-200">
                 現在編集中のデータは失われます。よろしいですか？
               </p>
@@ -693,7 +1016,7 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
         {mode === 'confirmAutoDeleteForSave' && (
           <div className="space-y-4">
             <div className="flex items-start gap-3 p-4 bg-yellow-900/30 border border-yellow-700/50 rounded-lg">
-              <AlertTriangle size={20} className="text-yellow-500 flex-shrink-0 mt-0.5" />
+              <AlertTriangle size={20} className="text-yellow-500 shrink-0 mt-0.5" />
               <p className="text-sm text-yellow-200">
                 保存容量が不足しています。<br />
                 自動保存データのみ削除して、手動保存を続行しますか？
@@ -718,12 +1041,41 @@ export default function SaveLoadModal({ isOpen, onClose, onToast }: SaveLoadModa
             </div>
           </div>
         )}
+
+        {mode === 'confirmResetDbForSave' && (
+          <div className="space-y-4">
+            <div className="flex items-start gap-3 p-4 bg-red-900/30 border border-red-700/50 rounded-lg">
+              <AlertTriangle size={20} className="text-red-500 shrink-0 mt-0.5" />
+              <p className="text-sm text-red-200">
+                保存用の IndexedDB が不整合状態の可能性があります。<br />
+                保存DBを初期化すると、自動保存と手動保存の履歴は消えますが、現在編集中の内容で再保存を試せます。続行しますか？
+              </p>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+                onClick={() => setMode('menu')}
+                disabled={isSaving}
+              >
+                キャンセル
+              </button>
+              <button
+                className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick={handleSaveAfterDbReset}
+                disabled={isSaving}
+              >
+                {isSaving ? '保存中...' : '初期化して保存'}
+              </button>
+            </div>
+          </div>
+        )}
         
         {/* 削除確認 */}
         {mode === 'confirmDelete' && (
           <div className="space-y-4">
             <div className="flex items-start gap-3 p-4 bg-red-900/30 border border-red-700/50 rounded-lg">
-              <AlertTriangle size={20} className="text-red-500 flex-shrink-0 mt-0.5" />
+              <AlertTriangle size={20} className="text-red-500 shrink-0 mt-0.5" />
               <p className="text-sm text-red-200">
                 自動保存と手動保存の両方のデータを削除します。この操作は取り消せません。
               </p>

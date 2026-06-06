@@ -3,7 +3,7 @@
  * @author Turtle Village
  * @description Narration section (multiple clips)
  */
-import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   Upload,
   Lock,
@@ -25,10 +25,12 @@ import {
   Save,
 } from 'lucide-react';
 import type { NarrationClip } from '../../types';
+import { getAudioUploadAccept } from '../../utils/platform';
 import { SwipeProtectedSlider } from '../SwipeProtectedSlider';
 
 interface NarrationSectionProps {
   narrations: NarrationClip[];
+  offlineMode: boolean;
   isNarrationLocked: boolean;
   totalDuration: number;
   currentTime: number;
@@ -51,6 +53,7 @@ interface NarrationSectionProps {
 
 const NarrationSection: React.FC<NarrationSectionProps> = ({
   narrations,
+  offlineMode,
   isNarrationLocked,
   totalDuration,
   currentTime,
@@ -73,19 +76,7 @@ const NarrationSection: React.FC<NarrationSectionProps> = ({
   const [isOpen, setIsOpen] = useState(false);
   const [openTrimMap, setOpenTrimMap] = useState<Record<string, boolean>>({});
   const prevNarrationCountRef = useRef(narrations.length);
-
-  const isIosSafari = useMemo(() => {
-    if (typeof navigator === 'undefined') return false;
-    const ua = navigator.userAgent;
-    const isIOS = /iP(hone|ad|od)/i.test(ua) ||
-      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    const isSafari = /Safari/i.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS|DuckDuckGo/i.test(ua);
-    return isIOS && isSafari;
-  }, []);
-
-  const audioFileAccept = isIosSafari
-    ? 'audio/*,.mp3,.m4a,.wav,.aac,.flac,.ogg,.oga,.opus,.caf,.aif,.aiff,.mp4,.m4v,.mov,.webm'
-    : 'audio/*';
+  const audioFileAccept = getAudioUploadAccept();
 
   const handleStartTimeChange = useCallback(
     (id: string, val: number) => onUpdateStartTime(id, String(val)),
@@ -113,6 +104,8 @@ const NarrationSection: React.FC<NarrationSectionProps> = ({
     }
     prevNarrationCountRef.current = narrations.length;
   }, [narrations.length]);
+
+  const isAiAddDisabled = isNarrationLocked || offlineMode;
 
   return (
     <section className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden shadow-xl">
@@ -149,8 +142,19 @@ const NarrationSection: React.FC<NarrationSectionProps> = ({
           </button>
           <button
             onClick={onAddAiNarration}
-            disabled={isNarrationLocked}
-            className={`h-7 md:h-8 bg-linear-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white px-2 md:px-2.5 rounded-lg text-xs md:text-sm font-semibold whitespace-nowrap transition flex items-center gap-1 ${isNarrationLocked ? 'opacity-50 pointer-events-none' : ''}`}
+            disabled={isAiAddDisabled}
+            className={`h-7 md:h-8 px-2 md:px-2.5 rounded-lg text-xs md:text-sm font-semibold whitespace-nowrap transition flex items-center gap-1 ${
+              isAiAddDisabled
+                ? 'bg-gray-700 border border-gray-600 text-gray-400 cursor-not-allowed'
+                : 'bg-linear-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white'
+            }`}
+            title={
+              offlineMode
+                ? 'オフラインモードではAIナレーションを追加できません'
+                : isNarrationLocked
+                  ? 'ロック中はAIナレーションを追加できません'
+                  : 'AIナレーションを追加'
+            }
           >
             <Sparkles className="w-3 h-3" /> AI
           </button>
@@ -174,12 +178,15 @@ const NarrationSection: React.FC<NarrationSectionProps> = ({
         <div className="p-3 lg:p-4 space-y-3 max-h-75 lg:max-h-128 overflow-y-auto custom-scrollbar">
           {narrations.length === 0 && (
             <div className="text-center py-8 text-gray-600 text-xs md:text-sm border-2 border-dashed border-gray-800 rounded">
-              ナレーションはまだありません。AIまたは追加で作成できます。
+              {offlineMode
+                ? 'ナレーションはまだありません。追加で作成できます。'
+                : 'ナレーションはまだありません。AIまたは追加で作成できます。'}
             </div>
           )}
 
           {narrations.map((clip, index) => {
             const isAi = clip.sourceType === 'ai';
+            const isAiEditDisabled = isNarrationLocked || !isAi || offlineMode;
             const isTrimOpen = openTrimMap[clip.id] ?? false;
             const trimStart = Number.isFinite(clip.trimStart) ? Math.max(0, clip.trimStart) : 0;
             const trimEnd = Number.isFinite(clip.trimEnd)
@@ -229,9 +236,15 @@ const NarrationSection: React.FC<NarrationSectionProps> = ({
                     </button>
                     <button
                       onClick={() => onEditAiNarration(clip.id)}
-                      disabled={isNarrationLocked || !isAi}
+                      disabled={isAiEditDisabled}
                       className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded border border-gray-600 text-gray-300 flex items-center gap-0.5 disabled:opacity-30 disabled:transition-none text-[10px] transition"
-                      title={isAi ? 'AIで編集' : '追加したナレーションはAI編集できません'}
+                      title={
+                        !isAi
+                          ? '追加したナレーションはAI編集できません'
+                          : offlineMode
+                            ? 'オフラインモードではAI編集できません'
+                            : 'AIで編集'
+                      }
                     >
                       <Edit2 className="w-3.5 h-3.5" />
                     </button>

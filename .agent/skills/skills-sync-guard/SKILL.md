@@ -1,6 +1,6 @@
 ---
 name: skills-sync-guard
-description: `.agent/skills` `.agents/skills` `.github/skills` を安全同期するスキル。各フォルダの更新状態を調査し、競合を検知してから最新戦略またはベース戦略で同期を実施する。「skillsを同期」「スキル同期」「sync skills」「sync-skills」「skillsフォルダを揃える」「.agent と .github を同期」などで発火。
+description: '`.agent/skills` `.agents/skills` `.github/skills` を安全同期するスキル。各フォルダの更新状態を調査し、競合を検知してから最新戦略またはベース戦略で同期を実施する。「skillsを同期」「スキル同期」「sync skills」「sync-skills」「skillsフォルダを揃える」「.agent と .github を同期」などで発火。'
 ---
 
 # Skills Sync Guard

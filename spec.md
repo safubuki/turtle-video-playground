@@ -4,6 +4,270 @@
 
 「タートルビデオ」は、ブラウザベースの動画編集アプリケーションです。React で構築されており、動画・画像のタイムライン編集、BGM・ナレーションの合成、AIナレーション生成機能を備えています。
 
+## 2026-03-11 iOS Safari 正式対応 - 仕様書
+
+### 概要
+
+iOS Safari で、Android Chrome / PC ブラウザと同等の主要機能を正式提供する。  
+その際、プレビュー再生系とエクスポート系の制御を必要な範囲で分離し、共通化できるタイムライン・描画・保存データ構造は維持する。
+
+### 背景・課題
+
+- 現状は PC / Android を既定経路にし、iOS Safari 向け回避を個別追加している。
+- `src/hooks/useExport.ts` と `src/components/TurtleVideo.tsx` に iOS Safari 固有ロジックが集中し、プレビューとエクスポートの相互影響リスクが高い。
+- ヘルプ文言上も iPhone（iOS Safari）は未対応扱いのままで、正式対応の検証基準が未整理。
+- 事前調査結果は `Docs/reports/2026-03-11_report_ios.md` に整理済み。
+
+### 要件一覧
+
+| # | 要件 | 優先度 | 説明 |
+|---|------|--------|------|
+| R1 | iOS Safari 正式対応 | 必須 | 動画・画像追加、BGM、ナレーション、キャプション、プレビュー、エクスポート、保存/読込、設定を実用レベルで提供する |
+| R2 | 分離方針の明確化 | 必須 | プレビュー制御とエクスポート制御を必要な範囲で分離し、相互デグレを避ける |
+| R3 | capability 共通化 | 必須 | `isIosSafari`、保存 API、TrackProcessor、MediaRecorder MP4 などの判定を共通 utility に集約する |
+| R4 | エクスポート戦略分離 | 必須 | iOS Safari MediaRecorder 経路と標準 WebCodecs 経路を strategy として分離する |
+| R5 | プレビュー制御分離 | 必須 | AudioContext 復帰、ネイティブ音声 mute、同期しきい値、visibility 復帰を preview controller / policy として切り出す |
+| R6 | 既存データ互換維持 | 必須 | 保存データ構造、既存プロジェクト読込、既存機能の操作性を壊さない |
+| R7 | iOS 専用 UI 差分の最小化 | 推奨 | UI 全体を platform fork せず、入力 accept、ヘルプ文言、ダウンロード経路など必要最小限に留める |
+| R8 | 実機検証観点の整備 | 必須 | iOS Safari 向けの再生・エクスポート・保存の確認観点を文書化し、再現確認可能にする |
+| R9 | テスト/検証追加 | 必須 | 少なくとも capability 判定、戦略選択、保存経路、主要 pure logic を自動検証できるようにする |
+| R10 | 正式対応表示への更新 | 推奨 | 検証完了後、ヘルプ等の「iPhone非対応」表記を見直す |
+
+### 分離・共通化方針
+
+#### 分離するもの
+
+- プレビュー再生制御
+  - AudioContext 復帰
+  - visibility 復帰
+  - ネイティブ音声 mute 方針
+  - ブラウザ別同期しきい値
+- エクスポート戦略
+  - iOS Safari MediaRecorder
+  - 標準 WebCodecs
+  - 最終フォールバック
+- プラットフォーム capability 判定
+
+#### 共通化するもの
+
+- タイムライン計算
+- Canvas の基本描画ルール
+- BGM / ナレーション / クリップ音声のタイムライン意味論
+- 保存/読込データ構造
+- ダウンロード UI の capability fallback
+
+### 影響を受けるファイル
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/components/TurtleVideo.tsx` | プレビュー/再生/AudioContext/保存ハンドラの整理、preview controller への責務分割 |
+| `src/hooks/useExport.ts` | strategy resolver 化、iOS Safari MediaRecorder と標準 WebCodecs の分離 |
+| `src/components/sections/BgmSection.tsx` | `accept` 文字列を共通 utility 経由へ変更 |
+| `src/components/sections/NarrationSection.tsx` | `accept` 文字列を共通 utility 経由へ変更 |
+| `src/components/media/MediaResourceLoader.tsx` | 必要に応じて playback/export 共通前提の見直し |
+| `src/utils/playbackTimeline.ts` | 共通タイムライン計算の再利用強化 |
+| `src/utils/` 配下新規 | platform capabilities、download/save、preview/export policy 用 utility 追加 |
+| `src/test/` 配下新規 | capability 判定、strategy 選択、pure logic テスト追加 |
+| `src/constants/sectionHelp.ts` | 正式対応後のヘルプ文言更新 |
+| `Docs/reports/2026-03-11_report_ios.md` | 事前調査レポート |
+
+### データ構造（計画）
+
+```ts
+export interface PlatformCapabilities {
+  isIosSafari: boolean;
+  supportsShowSaveFilePicker: boolean;
+  supportsTrackProcessor: boolean;
+  supportsCanvasRequestFrame: boolean;
+  supportsMp4MediaRecorder: boolean;
+  audioContextMayInterrupt: boolean;
+}
+
+export interface PreviewPlatformPolicy {
+  previewSyncThresholdSec: number;
+  exportSyncThresholdSec: number;
+  shouldMuteNativeMedia: boolean;
+  needsCaptionBlurFallback: boolean;
+  shouldReinitializeAudioRouteOnPlay: boolean;
+}
+
+export type ExportStrategyId =
+  | 'ios-safari-mediarecorder'
+  | 'webcodecs-mp4'
+  | 'webcodecs-fallback';
+```
+
+### 検証対象
+
+- 動画・画像追加
+- BGM 追加
+- ナレーション追加
+- キャプション追加
+- プレビュー再生、一時停止、停止、シーク、タブ復帰
+- 動画エクスポート
+- 手動保存 / 自動保存 / 読込
+- 各種設定
+- ダウンロード
+- 操作性、安定性、既存データ互換
+
+## 実装計画
+
+### Phase 0: 現状調査と設計整理 (完了)
+
+**目標**: iOS Safari 正式対応の前提となる現状分岐と制約を整理する
+
+**前提条件**: なし
+
+タスク:
+├── [x] 既存ドキュメントと実装の調査
+├── [x] iOS / Android / 共通の分岐点の棚卸し
+├── [x] iOS Safari 制約の原因整理
+└── [x] `Docs/reports/2026-03-11_report_ios.md` 作成
+
+**成果物**:
+- `Docs/reports/2026-03-11_report_ios.md`
+- 本仕様セクション
+
+**完了条件**:
+- [x] 調査結果が文書化されている
+- [x] 分離/共通化の基本方針が明文化されている
+
+---
+
+### Phase 1: Platform Capability 共通化
+
+**目標**: OS/ブラウザ依存判定を1か所に集約する
+
+**前提条件**: Phase 0 完了
+
+タスク:
+├── [x] `PlatformCapabilities` utility を追加
+├── [x] `isIosSafari` 重複判定を共通化
+├── [x] `showSaveFilePicker` / `TrackProcessor` / `MediaRecorder MP4` 判定を共通化
+└── [x] 動作確認
+
+**成果物**:
+- `src/utils/platform*.ts`（新規）
+- `src/components/TurtleVideo.tsx`
+- `src/hooks/useExport.ts`
+- `src/components/sections/BgmSection.tsx`
+- `src/components/sections/NarrationSection.tsx`
+
+**完了条件**:
+- [x] 各所の重複判定が除去されている
+- [x] 既存テストがパスする
+- [x] ビルドが成功する
+
+---
+
+### Phase 2: プレビュー制御の分離
+
+**目標**: preview 再生制御を export 制御から切り離す
+
+**前提条件**: Phase 1 完了
+
+タスク:
+├── [ ] `renderFrame` から export 専用制御を切り離す
+├── [x] AudioContext 復帰、visibility 復帰、mute 方針を preview policy 化する
+├── [x] iOS Safari の caption blur fallback を描画ポリシーへ整理する
+└── [x] 動作確認
+
+**成果物**:
+- `src/components/TurtleVideo.tsx`
+- `src/utils/preview*` または `src/hooks/usePreview*`（新規）
+
+**完了条件**:
+- [ ] 一時停止、停止、シーク、タブ復帰で既存デグレがない
+- [x] iOS 専用制御が preview 側に閉じている
+- [x] ビルドが成功する
+
+---
+
+### Phase 3: エクスポート戦略の分離
+
+**目標**: iOS Safari と標準ブラウザのエクスポート経路を strategy として分離する
+
+**前提条件**: Phase 2 完了
+
+タスク:
+├── [x] `useExport.ts` から iOS Safari MediaRecorder 経路を strategy 化する
+├── [ ] 標準 WebCodecs 経路を strategy 化する
+├── [x] strategy resolver を導入する
+└── [x] 動作確認
+
+**成果物**:
+- `src/hooks/useExport.ts`
+- `src/hooks/export-strategies/*` または同等の新規ファイル
+
+**完了条件**:
+- [ ] iOS Safari と非iOS の責務境界が明確
+- [ ] 音声/映像の既存回避策が strategy 内に閉じる
+- [x] 既存テストがパスする
+- [x] ビルドが成功する
+
+---
+
+### Phase 4: 保存・入力・ヘルプの正式対応整理
+
+**目標**: 入力/保存/UI 文言の platform 差分を最小限で整理する
+
+**前提条件**: Phase 3 完了
+
+タスク:
+├── [x] BGM/Narration の `accept` を共通 utility 化する
+├── [x] ダウンロード経路を capability ベースで整理する
+├── [x] 手動保存 / 自動保存 / 読込の iOS Safari 実機確認項目を反映する
+└── [x] ヘルプ文言更新方針を確定する
+
+**成果物**:
+- `src/components/sections/BgmSection.tsx`
+- `src/components/sections/NarrationSection.tsx`
+- `src/components/TurtleVideo.tsx`
+- `src/components/modals/SaveLoadModal.tsx`
+- `src/constants/sectionHelp.ts`
+- `src/utils/fileSave.ts`
+
+**完了条件**:
+- [x] iOS Safari で入力/ダウンロード/保存の方針が明確
+- [x] 不要な platform fork を増やしていない
+- [x] ビルドが成功する
+
+---
+
+### Phase 5: テスト・検証・正式対応化
+
+**目標**: 検証観点を揃え、正式対応の判断材料を揃える
+
+**前提条件**: Phase 4 完了
+
+タスク:
+├── [x] capability 判定と strategy 選択のテスト追加
+├── [x] プレビュー/エクスポートの pure logic テスト追加
+├── [x] 実機確認結果をドキュメントに反映
+└── [ ] 正式対応表記へ更新
+
+**成果物**:
+- `src/test/` 配下の新規/更新テスト
+- 必要な Docs 更新
+
+**完了条件**:
+- [x] `npm run test:run` が通る
+- [x] `npm run build` が成功する
+- [ ] iOS Safari の主要受け入れ条件を確認済み
+- [x] 「iPhone 非対応」表記の更新可否を判断できる
+
+### ブランチ運用方針
+
+- 統合作業ブランチは `feature/ios-safari-support` とする。
+- まず、現状調査レポートと iOS Safari 対応の仕様/実装計画を `feature/ios-safari-support` にコミットする。
+- 各実装フェーズは以下の個別ブランチで進める。
+  - `feature/ios-phase1-capabilities`
+  - `feature/ios-phase2-preview-policy`
+  - `feature/ios-phase3-export-strategy`
+- 各フェーズブランチは `feature/ios-safari-support` から作成し、フェーズ単位で動作確認・コミット後、`feature/ios-safari-support` へ段階的にマージする。
+- `main` へは各フェーズを統合した `feature/ios-safari-support` で最終動作確認完了後にマージする。
+- Android/PC 既定経路への影響を避けるため、各フェーズのマージ条件は「そのフェーズ単体で責務が閉じていること」「既存テスト/ビルドが成功すること」「Android/PC の主要導線にデグレがないこと」とする。
+
 ---
 
 ## 現状の機能一覧

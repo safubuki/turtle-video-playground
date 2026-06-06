@@ -60,7 +60,7 @@ export default defineConfig({
       },
     }),
   ],
-  // Cloudflare Pages はルート配信のため base は '/'。
+  // GitHub Pages用のベースパス設定
   base: '/',
   server: {
     port: 3000,

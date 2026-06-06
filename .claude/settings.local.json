@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git ls-tree *)",
+      "Bash(npx vitest *)",
+      "Bash(npx tsc *)",
+      "Bash(git log *)"
+    ]
+  }
+}

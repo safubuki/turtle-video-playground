@@ -28,7 +28,6 @@ const Header: React.FC<HeaderProps> = ({ onOpenSettings, onOpenProjectManager, o
             />
           </div>
           <h1 className="font-bold text-lg lg:text-xl whitespace-nowrap leading-none">タートルビデオ</h1>
-          {/* モバイル: タイトル横に配置（従来通り） */}
           <div className="flex items-center gap-1 lg:hidden">
             {onOpenProjectManager && (
               <button
@@ -60,7 +59,6 @@ const Header: React.FC<HeaderProps> = ({ onOpenSettings, onOpenProjectManager, o
             )}
           </div>
         </div>
-        {/* PC: タイトルから少し離して右側に配置 (ml-8 で間隔調整) */}
         <div className="hidden lg:flex items-center gap-1 ml-10">
           {onOpenProjectManager && (
             <button

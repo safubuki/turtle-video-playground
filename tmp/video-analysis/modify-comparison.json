@@ -1,0 +1,568 @@
+{
+  "modify_vs_v410": {
+    "overlap_frames": 964,
+    "overlap_duration_sec": 32.133,
+    "mean_same_frame_diff": 12.579558067759518,
+    "median_same_frame_diff": 1.8033758997917175,
+    "best_match_counts": {
+      "same": 487,
+      "prev": 422,
+      "next": 53
+    },
+    "top_neighbor_mismatches": [
+      {
+        "frame": 580,
+        "time_sec": 19.333,
+        "diff_prev": 0.8910937309265137,
+        "diff_same": 76.88729095458984,
+        "diff_next": 76.88697814941406,
+        "delta_from_neighbor": 75.99619722366333,
+        "best": "prev"
+      },
+      {
+        "frame": 218,
+        "time_sec": 7.267,
+        "diff_prev": 2.245511770248413,
+        "diff_same": 69.58053588867188,
+        "diff_next": 70.77897644042969,
+        "delta_from_neighbor": 67.33502411842346,
+        "best": "prev"
+      },
+      {
+        "frame": 663,
+        "time_sec": 22.1,
+        "diff_prev": 61.281494140625,
+        "diff_same": 121.114013671875,
+        "diff_next": 117.73515319824219,
+        "delta_from_neighbor": 59.83251953125,
+        "best": "prev"
+      },
+      {
+        "frame": 450,
+        "time_sec": 15.0,
+        "diff_prev": 109.96168518066406,
+        "diff_same": 113.48272705078125,
+        "diff_next": 63.693443298339844,
+        "delta_from_neighbor": 49.789283752441406,
+        "best": "next"
+      },
+      {
+        "frame": 8,
+        "time_sec": 0.267,
+        "diff_prev": 1.423109769821167,
+        "diff_same": 38.87891387939453,
+        "diff_next": 44.65089416503906,
+        "delta_from_neighbor": 37.455804109573364,
+        "best": "prev"
+      },
+      {
+        "frame": 9,
+        "time_sec": 0.3,
+        "diff_prev": 1.677905559539795,
+        "diff_same": 37.82040023803711,
+        "diff_next": 37.8194580078125,
+        "delta_from_neighbor": 36.142494678497314,
+        "best": "prev"
+      },
+      {
+        "frame": 13,
+        "time_sec": 0.433,
+        "diff_prev": 1.851489782333374,
+        "diff_same": 37.7720947265625,
+        "diff_next": 42.09767532348633,
+        "delta_from_neighbor": 35.920604944229126,
+        "best": "prev"
+      },
+      {
+        "frame": 14,
+        "time_sec": 0.467,
+        "diff_prev": 1.9801204204559326,
+        "diff_same": 37.12824630737305,
+        "diff_next": 37.12937545776367,
+        "delta_from_neighbor": 35.148125886917114,
+        "best": "prev"
+      },
+      {
+        "frame": 3,
+        "time_sec": 0.1,
+        "diff_prev": 0.0,
+        "diff_same": 35.032264709472656,
+        "diff_next": 44.725616455078125,
+        "delta_from_neighbor": 35.032264709472656,
+        "best": "prev"
+      },
+      {
+        "frame": 4,
+        "time_sec": 0.133,
+        "diff_prev": 0.40061163902282715,
+        "diff_same": 35.09053421020508,
+        "diff_next": 35.09081268310547,
+        "delta_from_neighbor": 34.68992257118225,
+        "best": "prev"
+      },
+      {
+        "frame": 278,
+        "time_sec": 9.267,
+        "diff_prev": 1.299342155456543,
+        "diff_same": 35.07444763183594,
+        "diff_next": 42.68006134033203,
+        "delta_from_neighbor": 33.775105476379395,
+        "best": "prev"
+      },
+      {
+        "frame": 274,
+        "time_sec": 9.133,
+        "diff_prev": 1.4064663648605347,
+        "diff_same": 34.829219818115234,
+        "diff_next": 34.831085205078125,
+        "delta_from_neighbor": 33.4227534532547,
+        "best": "prev"
+      },
+      {
+        "frame": 18,
+        "time_sec": 0.6,
+        "diff_prev": 1.897560715675354,
+        "diff_same": 34.0361328125,
+        "diff_next": 38.499595642089844,
+        "delta_from_neighbor": 32.138572096824646,
+        "best": "prev"
+      },
+      {
+        "frame": 19,
+        "time_sec": 0.633,
+        "diff_prev": 1.88542902469635,
+        "diff_same": 33.55413055419922,
+        "diff_next": 33.55554962158203,
+        "delta_from_neighbor": 31.66870152950287,
+        "best": "prev"
+      },
+      {
+        "frame": 293,
+        "time_sec": 9.767,
+        "diff_prev": 1.244262933731079,
+        "diff_same": 31.665559768676758,
+        "diff_next": 39.38991165161133,
+        "delta_from_neighbor": 30.42129683494568,
+        "best": "prev"
+      },
+      {
+        "frame": 273,
+        "time_sec": 9.1,
+        "diff_prev": 1.3914949893951416,
+        "diff_same": 31.567174911499023,
+        "diff_next": 40.35169982910156,
+        "delta_from_neighbor": 30.175679922103882,
+        "best": "prev"
+      },
+      {
+        "frame": 294,
+        "time_sec": 9.8,
+        "diff_prev": 1.211763620376587,
+        "diff_same": 31.281373977661133,
+        "diff_next": 31.28356170654297,
+        "delta_from_neighbor": 30.069610357284546,
+        "best": "prev"
+      },
+      {
+        "frame": 23,
+        "time_sec": 0.767,
+        "diff_prev": 1.9673081636428833,
+        "diff_same": 31.72121810913086,
+        "diff_next": 35.56268310546875,
+        "delta_from_neighbor": 29.753909945487976,
+        "best": "prev"
+      },
+      {
+        "frame": 263,
+        "time_sec": 8.767,
+        "diff_prev": 1.4265415668487549,
+        "diff_same": 30.77162742614746,
+        "diff_next": 38.308929443359375,
+        "delta_from_neighbor": 29.345085859298706,
+        "best": "prev"
+      },
+      {
+        "frame": 24,
+        "time_sec": 0.8,
+        "diff_prev": 1.9570177793502808,
+        "diff_same": 31.22516441345215,
+        "diff_next": 31.226682662963867,
+        "delta_from_neighbor": 29.268146634101868,
+        "best": "prev"
+      },
+      {
+        "frame": 259,
+        "time_sec": 8.633,
+        "diff_prev": 1.3534164428710938,
+        "diff_same": 30.15535545349121,
+        "diff_next": 30.157365798950195,
+        "delta_from_neighbor": 28.801939010620117,
+        "best": "prev"
+      },
+      {
+        "frame": 264,
+        "time_sec": 8.8,
+        "diff_prev": 1.4477988481521606,
+        "diff_same": 30.11912727355957,
+        "diff_next": 30.123287200927734,
+        "delta_from_neighbor": 28.67132842540741,
+        "best": "prev"
+      },
+      {
+        "frame": 298,
+        "time_sec": 9.933,
+        "diff_prev": 1.144439697265625,
+        "diff_same": 29.704465866088867,
+        "diff_next": 37.41586685180664,
+        "delta_from_neighbor": 28.560026168823242,
+        "best": "prev"
+      },
+      {
+        "frame": 253,
+        "time_sec": 8.433,
+        "diff_prev": 1.492462396621704,
+        "diff_same": 30.020280838012695,
+        "diff_next": 38.25068664550781,
+        "delta_from_neighbor": 28.52781844139099,
+        "best": "prev"
+      },
+      {
+        "frame": 258,
+        "time_sec": 8.6,
+        "diff_prev": 1.4214580059051514,
+        "diff_same": 29.904895782470703,
+        "diff_next": 38.987483978271484,
+        "delta_from_neighbor": 28.48343777656555,
+        "best": "prev"
+      },
+      {
+        "frame": 299,
+        "time_sec": 9.967,
+        "diff_prev": 1.124839425086975,
+        "diff_same": 29.58075523376465,
+        "diff_next": 29.62371063232422,
+        "delta_from_neighbor": 28.455915808677673,
+        "best": "prev"
+      },
+      {
+        "frame": 249,
+        "time_sec": 8.3,
+        "diff_prev": 1.5398740768432617,
+        "diff_same": 29.517221450805664,
+        "diff_next": 29.518857955932617,
+        "delta_from_neighbor": 27.977347373962402,
+        "best": "prev"
+      },
+      {
+        "frame": 28,
+        "time_sec": 0.933,
+        "diff_prev": 1.957128643989563,
+        "diff_same": 28.851863861083984,
+        "diff_next": 32.926849365234375,
+        "delta_from_neighbor": 26.89473521709442,
+        "best": "prev"
+      },
+      {
+        "frame": 254,
+        "time_sec": 8.467,
+        "diff_prev": 1.4960999488830566,
+        "diff_same": 28.288198471069336,
+        "diff_next": 28.289995193481445,
+        "delta_from_neighbor": 26.79209852218628,
+        "best": "prev"
+      },
+      {
+        "frame": 29,
+        "time_sec": 0.967,
+        "diff_prev": 1.9639959335327148,
+        "diff_same": 28.5631160736084,
+        "diff_next": 28.637821197509766,
+        "delta_from_neighbor": 26.599120140075684,
+        "best": "prev"
+      }
+    ]
+  },
+  "modify_vs_v500": {
+    "overlap_frames": 964,
+    "overlap_duration_sec": 32.133,
+    "mean_same_frame_diff": 12.843758380329508,
+    "median_same_frame_diff": 1.609149158000946,
+    "best_match_counts": {
+      "same": 483,
+      "prev": 398,
+      "next": 81
+    },
+    "top_neighbor_mismatches": [
+      {
+        "frame": 218,
+        "time_sec": 7.267,
+        "diff_prev": 2.306555986404419,
+        "diff_same": 69.62324523925781,
+        "diff_next": 70.7854232788086,
+        "delta_from_neighbor": 67.3166892528534,
+        "best": "prev"
+      },
+      {
+        "frame": 663,
+        "time_sec": 22.1,
+        "diff_prev": 61.27936553955078,
+        "diff_same": 122.1164779663086,
+        "diff_next": 118.7257080078125,
+        "delta_from_neighbor": 60.83711242675781,
+        "best": "prev"
+      },
+      {
+        "frame": 451,
+        "time_sec": 15.033,
+        "diff_prev": 116.79654693603516,
+        "diff_same": 116.79654693603516,
+        "diff_next": 63.814697265625,
+        "delta_from_neighbor": 52.981849670410156,
+        "best": "next"
+      },
+      {
+        "frame": 8,
+        "time_sec": 0.267,
+        "diff_prev": 1.4277716875076294,
+        "diff_same": 38.87812423706055,
+        "diff_next": 44.65395736694336,
+        "delta_from_neighbor": 37.45035254955292,
+        "best": "prev"
+      },
+      {
+        "frame": 10,
+        "time_sec": 0.333,
+        "diff_prev": 1.8171085119247437,
+        "diff_same": 38.06543731689453,
+        "diff_next": 38.06599044799805,
+        "delta_from_neighbor": 36.24832880496979,
+        "best": "prev"
+      },
+      {
+        "frame": 9,
+        "time_sec": 0.3,
+        "diff_prev": 1.6800199747085571,
+        "diff_same": 37.82199478149414,
+        "diff_next": 43.71272659301758,
+        "delta_from_neighbor": 36.14197480678558,
+        "best": "prev"
+      },
+      {
+        "frame": 13,
+        "time_sec": 0.433,
+        "diff_prev": 1.8793545961380005,
+        "diff_same": 37.772361755371094,
+        "diff_next": 42.09746170043945,
+        "delta_from_neighbor": 35.89300715923309,
+        "best": "prev"
+      },
+      {
+        "frame": 14,
+        "time_sec": 0.467,
+        "diff_prev": 1.9966394901275635,
+        "diff_same": 37.11963653564453,
+        "diff_next": 41.17695236206055,
+        "delta_from_neighbor": 35.12299704551697,
+        "best": "prev"
+      },
+      {
+        "frame": 3,
+        "time_sec": 0.1,
+        "diff_prev": 0.0,
+        "diff_same": 35.032264709472656,
+        "diff_next": 44.725616455078125,
+        "delta_from_neighbor": 35.032264709472656,
+        "best": "prev"
+      },
+      {
+        "frame": 4,
+        "time_sec": 0.133,
+        "diff_prev": 0.40061163902282715,
+        "diff_same": 35.09053421020508,
+        "diff_next": 44.018341064453125,
+        "delta_from_neighbor": 34.68992257118225,
+        "best": "prev"
+      },
+      {
+        "frame": 275,
+        "time_sec": 9.167,
+        "diff_prev": 1.1977585554122925,
+        "diff_same": 35.3027229309082,
+        "diff_next": 35.302947998046875,
+        "delta_from_neighbor": 34.10496437549591,
+        "best": "prev"
+      },
+      {
+        "frame": 278,
+        "time_sec": 9.267,
+        "diff_prev": 1.1837416887283325,
+        "diff_same": 35.07757568359375,
+        "diff_next": 42.68722152709961,
+        "delta_from_neighbor": 33.89383399486542,
+        "best": "prev"
+      },
+      {
+        "frame": 15,
+        "time_sec": 0.5,
+        "diff_prev": 1.9820493459701538,
+        "diff_same": 35.797908782958984,
+        "diff_next": 35.79903030395508,
+        "delta_from_neighbor": 33.81585943698883,
+        "best": "prev"
+      },
+      {
+        "frame": 5,
+        "time_sec": 0.167,
+        "diff_prev": 0.9266167283058167,
+        "diff_same": 34.47153091430664,
+        "diff_next": 34.47102355957031,
+        "delta_from_neighbor": 33.544914186000824,
+        "best": "prev"
+      },
+      {
+        "frame": 274,
+        "time_sec": 9.133,
+        "diff_prev": 1.2905086278915405,
+        "diff_same": 34.833866119384766,
+        "diff_next": 43.04652786254883,
+        "delta_from_neighbor": 33.543357491493225,
+        "best": "prev"
+      },
+      {
+        "frame": 280,
+        "time_sec": 9.333,
+        "diff_prev": 1.2922189235687256,
+        "diff_same": 33.50432586669922,
+        "diff_next": 33.505374908447266,
+        "delta_from_neighbor": 32.21210694313049,
+        "best": "prev"
+      },
+      {
+        "frame": 18,
+        "time_sec": 0.6,
+        "diff_prev": 1.905992865562439,
+        "diff_same": 34.01552963256836,
+        "diff_next": 38.48106384277344,
+        "delta_from_neighbor": 32.10953676700592,
+        "best": "prev"
+      },
+      {
+        "frame": 19,
+        "time_sec": 0.633,
+        "diff_prev": 1.888952612876892,
+        "diff_same": 33.53213882446289,
+        "diff_next": 37.289634704589844,
+        "delta_from_neighbor": 31.643186211586,
+        "best": "prev"
+      },
+      {
+        "frame": 20,
+        "time_sec": 0.667,
+        "diff_prev": 2.0101239681243896,
+        "diff_same": 33.26620101928711,
+        "diff_next": 33.266727447509766,
+        "delta_from_neighbor": 31.25607705116272,
+        "best": "prev"
+      },
+      {
+        "frame": 293,
+        "time_sec": 9.767,
+        "diff_prev": 1.240929126739502,
+        "diff_same": 31.65443992614746,
+        "diff_next": 39.37806701660156,
+        "delta_from_neighbor": 30.41351079940796,
+        "best": "prev"
+      },
+      {
+        "frame": 273,
+        "time_sec": 9.1,
+        "diff_prev": 1.3844830989837646,
+        "diff_same": 31.58038902282715,
+        "diff_next": 40.358726501464844,
+        "delta_from_neighbor": 30.195905923843384,
+        "best": "prev"
+      },
+      {
+        "frame": 294,
+        "time_sec": 9.8,
+        "diff_prev": 1.201011061668396,
+        "diff_same": 31.284122467041016,
+        "diff_next": 39.6688117980957,
+        "delta_from_neighbor": 30.08311140537262,
+        "best": "prev"
+      },
+      {
+        "frame": 23,
+        "time_sec": 0.767,
+        "diff_prev": 1.9776462316513062,
+        "diff_same": 31.724628448486328,
+        "diff_next": 35.55127716064453,
+        "delta_from_neighbor": 29.746982216835022,
+        "best": "prev"
+      },
+      {
+        "frame": 295,
+        "time_sec": 9.833,
+        "diff_prev": 1.1307096481323242,
+        "diff_same": 30.67953109741211,
+        "diff_next": 30.68021011352539,
+        "delta_from_neighbor": 29.548821449279785,
+        "best": "prev"
+      },
+      {
+        "frame": 263,
+        "time_sec": 8.767,
+        "diff_prev": 1.3079148530960083,
+        "diff_same": 30.781108856201172,
+        "diff_next": 38.3069953918457,
+        "delta_from_neighbor": 29.473194003105164,
+        "best": "prev"
+      },
+      {
+        "frame": 24,
+        "time_sec": 0.8,
+        "diff_prev": 1.970619559288025,
+        "diff_same": 31.223169326782227,
+        "diff_next": 34.79448699951172,
+        "delta_from_neighbor": 29.2525497674942,
+        "best": "prev"
+      },
+      {
+        "frame": 250,
+        "time_sec": 8.333,
+        "diff_prev": 1.388550043106079,
+        "diff_same": 30.280611038208008,
+        "diff_next": 30.279693603515625,
+        "delta_from_neighbor": 28.89206099510193,
+        "best": "prev"
+      },
+      {
+        "frame": 264,
+        "time_sec": 8.8,
+        "diff_prev": 1.3031901121139526,
+        "diff_same": 30.10012435913086,
+        "diff_next": 38.37574768066406,
+        "delta_from_neighbor": 28.796934247016907,
+        "best": "prev"
+      },
+      {
+        "frame": 259,
+        "time_sec": 8.633,
+        "diff_prev": 1.4482100009918213,
+        "diff_same": 30.194774627685547,
+        "diff_next": 38.67298889160156,
+        "delta_from_neighbor": 28.746564626693726,
+        "best": "prev"
+      },
+      {
+        "frame": 25,
+        "time_sec": 0.833,
+        "diff_prev": 2.007249355316162,
+        "diff_same": 30.649250030517578,
+        "diff_next": 30.649873733520508,
+        "delta_from_neighbor": 28.642000675201416,
+        "best": "prev"
+      }
+    ]
+  }
+}

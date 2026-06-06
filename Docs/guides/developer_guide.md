@@ -1,4 +1,4 @@
-﻿# 開発者ガイド（汎用動画解析）
+# 開発者ガイド（汎用動画解析）
 
 このガイドは、開発者向けの動画解析環境（`scripts/dev` 配下）をローカルで構築して使う手順を説明します。
 
@@ -23,7 +23,7 @@
 ### スクリプト一覧の集約先
 
 - 実行コマンドの正本: `package.json` の `scripts`
-- 使い方の詳細: `Docs/developer_guide.md`
+- 使い方の詳細: `Docs/guides/developer_guide.md`
 
 ## 3. 初期セットアップ
 
@@ -178,7 +178,7 @@ Remove-Item -Recurse -Force .\.venv-media-analysis
 システムに `gh` が無い場合でも、このリポジトリ同梱の `.\.tools\gh\bin\gh.exe` を利用できます。
 
 ```powershell
-cd C:\git_home\turtle-video-playground
+cd C:\git_home\turtle-video
 $env:GH_CONFIG_DIR="$PWD\.tools\gh\config"
 .\.tools\gh\bin\gh.exe auth login --hostname github.com
 .\.tools\gh\bin\gh.exe auth status
@@ -201,4 +201,4 @@ npm run issue:create -- --type docs --summary "手順確認"
 - 補足: 環境によって `read:org` が必要になるため、Classic PAT は `public_repo + read:org` または `repo + read:org` を推奨
 - Fine-grained PAT: 対象リポジトリの `Issues: Read and write`
 
-詳細手順は `Docs/github_issue_workflow.md` を参照してください。
+詳細手順は `Docs/guides/github_issue_workflow.md` を参照してください。

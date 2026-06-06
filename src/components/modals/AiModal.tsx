@@ -60,6 +60,11 @@ const AiModal: React.FC<AiModalProps> = ({
   const touchDeltaYRef = useRef(0);
   const swipeCloseEligibleRef = useRef(false);
 
+  const isEditableTouchTarget = (target: EventTarget | null): boolean => {
+    if (!(target instanceof Element)) return false;
+    return target.closest('textarea, input:not([type="radio"]):not([type="checkbox"]):not([type="range"]), select, [contenteditable="true"]') !== null;
+  };
+
   const isMobileViewport = () => {
     if (typeof window === 'undefined') return false;
     return window.matchMedia('(max-width: 767px)').matches;
@@ -207,6 +212,10 @@ const AiModal: React.FC<AiModalProps> = ({
 
   const handleSheetTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
     if (!isMobileViewport() || event.touches.length !== 1) {
+      resetTouchTracking();
+      return;
+    }
+    if (isEditableTouchTarget(event.target)) {
       resetTouchTracking();
       return;
     }
@@ -398,7 +407,7 @@ const AiModal: React.FC<AiModalProps> = ({
               value={aiScript}
               onChange={(e) => onScriptChange(e.target.value)}
               placeholder="ここにそのままナレーション原稿を入力できます"
-              className="w-full h-[5.5rem] md:h-24 bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm focus:outline-none focus:border-blue-500 resize-none"
+              className="w-full h-44 md:h-48 bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm focus:outline-none focus:border-blue-500 resize-none"
             />
           </div>
           <div className="space-y-3 md:space-y-4">

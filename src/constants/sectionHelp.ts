@@ -4,6 +4,12 @@
  * @description セクションヘルプの表示内容を一元管理する定義。
  */
 
+import type { AppFlavor } from '../app/resolveAppFlavor';
+import {
+  getAppFlavorSupportSummary,
+  getDownloadHelpSentence,
+} from '../app/appFlavorUi';
+
 export type SectionHelpKey = 'app' | 'clips' | 'bgm' | 'narration' | 'caption' | 'preview';
 
 export type SectionHelpVisualId =
@@ -69,7 +75,16 @@ export interface SectionHelpDefinition {
   items: SectionHelpItem[];
 }
 
-export const SECTION_HELP_CONTENT: Record<SectionHelpKey, SectionHelpDefinition> = {
+export interface SectionHelpContext {
+  appFlavor: AppFlavor;
+  supportsShowSaveFilePicker: boolean;
+}
+
+export function getSectionHelpContent(context: SectionHelpContext): Record<SectionHelpKey, SectionHelpDefinition> {
+  const downloadHelpSentence = getDownloadHelpSentence(context);
+  const appFlavorSupportSummary = getAppFlavorSupportSummary(context.appFlavor);
+
+  return {
   app: {
     title: 'タートルビデオの使い方',
     subtitle: '',
@@ -93,7 +108,8 @@ export const SECTION_HELP_CONTENT: Record<SectionHelpKey, SectionHelpDefinition>
       {
         title: '動作確認機種',
         description:
-          'スマホ: Pixel 6a（Android・Chrome）\nPC: Windows / CPU Ryzen 5 5500 / GPU RTX3060 12GB\n※動作確認は手持ちの機種でのみ実施しています。もし、動作しない場合はご了承ください。\n※iPhone（iOS・Safari）は現状非対応。ただし、順次対応予定。',
+          'スマホ: Pixel 6a（Android・Chrome）\nPC: Windows / CPU Ryzen 5 5500 / GPU RTX3060 12GB\n※動作確認は手持ちの機種でのみ実施しています。もし、動作しない場合はご了承ください。\n'
+          + `※${appFlavorSupportSummary}`,
       },
       {
         title: '注意事項',
@@ -264,7 +280,8 @@ export const SECTION_HELP_CONTENT: Record<SectionHelpKey, SectionHelpDefinition>
       {
         title: '並び替え・編集・削除・保存',
         description:
-          '各ナレーションを上下移動、編集、削除できます。保存ボタンを使うと、AIで生成したナレーションをパソコンやスマホに保存できます。',
+          '各ナレーションを上下移動、編集、削除できます。保存ボタンを使うと、AIで生成したナレーションをパソコンやスマホに保存できます。'
+          + `${downloadHelpSentence}`,
         visuals: ['move_up_button', 'move_down_button', 'edit_button', 'delete_button', 'save_button'],
       },
       {
@@ -341,7 +358,9 @@ export const SECTION_HELP_CONTENT: Record<SectionHelpKey, SectionHelpDefinition>
       },
       {
         title: '作成後のダウンロード',
-        description: '作成完了後はダウンロードできます。停止/再生を押すと「動画ファイルを作成」ボタンに戻り、再作成も可能です。',
+        description:
+          '作成完了後はダウンロードできます。'
+          + `${downloadHelpSentence}停止/再生を押すと「動画ファイルを作成」ボタンに戻り、再作成も可能です。`,
         visuals: ['download_button'],
       },
       {
@@ -351,4 +370,10 @@ export const SECTION_HELP_CONTENT: Record<SectionHelpKey, SectionHelpDefinition>
       },
     ],
   },
-};
+  };
+}
+
+export const SECTION_HELP_CONTENT: Record<SectionHelpKey, SectionHelpDefinition> = getSectionHelpContent({
+  appFlavor: 'standard',
+  supportsShowSaveFilePicker: false,
+});

@@ -5,6 +5,7 @@
  */
 import React, { memo, useMemo } from 'react';
 import type { MediaResourceLoaderProps, MediaItem } from '../../types';
+import { getPlatformCapabilities } from '../../utils/platform';
 
 interface MediaItemResourceProps {
   item: MediaItem;
@@ -21,7 +22,12 @@ const MediaItemResource = memo<MediaItemResourceProps>(
     if (item.type === 'video') {
       return (
         <video
-          ref={(el) => onRefAssign(item.id, el)}
+          ref={(el) => {
+            if (el) {
+              el.setAttribute('webkit-playsinline', '');
+            }
+            onRefAssign(item.id, el);
+          }}
           src={item.url}
           onLoadedMetadata={(e) => onElementLoaded(item.id, e.currentTarget)}
           onLoadedData={onVideoLoadedData}
@@ -52,19 +58,24 @@ MediaItemResource.displayName = 'MediaItemResource';
 
 const MediaResourceLoader = memo<MediaResourceLoaderProps>(
   ({ mediaItems, bgm, narrations, onElementLoaded, onRefAssign, onSeeked, onVideoLoadedData }) => {
+    const { isIosSafari } = getPlatformCapabilities();
     const hiddenStyle: React.CSSProperties = useMemo(() => ({
       position: 'fixed',
       top: 0,
       left: 0,
       width: '320px',
       height: '240px',
-      opacity: 0.001,
+      opacity: isIosSafari ? 0.01 : 0.001,
       pointerEvents: 'none',
-      zIndex: -100,
+      zIndex: -1000,
       visibility: 'visible',
-    }), []);
+    }), [isIosSafari]);
 
-    const audioStyle: React.CSSProperties = useMemo(() => ({ display: 'none' }), []);
+    const audioStyle: React.CSSProperties = useMemo(() => ({
+      ...hiddenStyle,
+      width: '1px',
+      height: '1px',
+    }), [hiddenStyle]);
 
     const handleError = useMemo(
       () => (e: React.SyntheticEvent<HTMLVideoElement | HTMLAudioElement>) => {
@@ -83,8 +94,19 @@ const MediaResourceLoader = memo<MediaResourceLoaderProps>(
       []
     );
 
+    const containerStyle: React.CSSProperties = useMemo(() => ({
+      position: 'fixed',
+      top: 0,
+      left: 0,
+      width: isIosSafari ? '1px' : 0,
+      height: isIosSafari ? '1px' : 0,
+      overflow: isIosSafari ? 'visible' : 'hidden',
+      pointerEvents: 'none',
+      zIndex: -1000,
+    }), [isIosSafari]);
+
     return (
-      <div style={{ position: 'fixed', top: 0, left: 0, width: 0, height: 0, overflow: 'hidden' }}>
+      <div style={containerStyle}>
         {mediaItems.map((item) => (
           <MediaItemResource
             key={item.id}

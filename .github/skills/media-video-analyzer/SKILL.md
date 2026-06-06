@@ -1,4 +1,4 @@
-﻿---
+---
 name: media-video-analyzer
 description: 動画ファイルを根拠に挙動確認・不具合解析を行う汎用スキル。動画解析の明示依頼時のみ発火し、依存導入前に必ず確認し、まず summary で観測して必要時のみ scripts/dev を生成・拡張する。
 ---

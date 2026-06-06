@@ -3,7 +3,7 @@
  * @author Turtle Village
  * @description 動画・画像クリップの管理を行うセクション。アップロード、並び替え、各クリップの基本操作（削除、複製）を提供するリストビュー。
  */
-import React from 'react';
+import React, { useRef } from 'react';
 import { Upload, Lock, Unlock, CircleHelp } from 'lucide-react';
 import type { MediaItem } from '../../types';
 import ClipItem from '../media/ClipItem';
@@ -15,6 +15,8 @@ interface ClipsSectionProps {
   mediaElements: Record<string, HTMLVideoElement | HTMLImageElement>;
   onToggleClipsLock: () => void;
   onMediaUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onOpenMediaPicker: () => void;
+  supportsShowOpenFilePicker: boolean;
   onMoveMedia: (index: number, direction: 'up' | 'down') => void;
   onRemoveMedia: (id: string) => void;
   onToggleMediaLock: (id: string) => void;
@@ -43,6 +45,8 @@ const ClipsSection: React.FC<ClipsSectionProps> = ({
   mediaElements,
   onToggleClipsLock,
   onMediaUpload,
+  onOpenMediaPicker,
+  supportsShowOpenFilePicker,
   onMoveMedia,
   onRemoveMedia,
   onToggleMediaLock,
@@ -60,6 +64,17 @@ const ClipsSection: React.FC<ClipsSectionProps> = ({
   onUpdateFadeOutDuration,
   onOpenHelp,
 }) => {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleAddClick = () => {
+    if (isClipsLocked) return;
+    if (supportsShowOpenFilePicker) {
+      onOpenMediaPicker();
+      return;
+    }
+    fileInputRef.current?.click();
+  };
+
   return (
     <section className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden shadow-xl">
       <div className="p-4 bg-gray-850 border-b border-gray-800 flex justify-between items-center gap-3">
@@ -86,19 +101,23 @@ const ClipsSection: React.FC<ClipsSectionProps> = ({
           >
             {isClipsLocked ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}
           </button>
-          <label
-            className={`cursor-pointer bg-emerald-700 hover:bg-emerald-600 border border-emerald-500/45 text-white px-2.5 py-1 rounded-lg text-xs md:text-sm font-semibold whitespace-nowrap flex items-center gap-1 transition ${isClipsLocked ? 'opacity-50 pointer-events-none' : ''}`}
+          <button
+            type="button"
+            onClick={handleAddClick}
+            className={`bg-emerald-700 hover:bg-emerald-600 border border-emerald-500/45 text-white px-2.5 py-1 rounded-lg text-xs md:text-sm font-semibold whitespace-nowrap flex items-center gap-1 transition ${isClipsLocked ? 'opacity-50 pointer-events-none' : ''}`}
+            disabled={isClipsLocked}
           >
             <Upload className="w-3 h-3" /> 追加
-            <input
-              type="file"
-              multiple
-              accept="video/*, image/*"
-              className="hidden"
-              onChange={onMediaUpload}
-              disabled={isClipsLocked}
-            />
-          </label>
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept="image/*,video/*"
+            className="hidden"
+            onChange={onMediaUpload}
+            disabled={isClipsLocked}
+          />
         </div>
       </div>
       <div className="p-3 lg:p-4 space-y-3 max-h-75 lg:max-h-128 overflow-y-auto custom-scrollbar">

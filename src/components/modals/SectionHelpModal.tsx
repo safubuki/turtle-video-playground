@@ -37,12 +37,15 @@ import {
 } from 'lucide-react';
 import { useDisableBodyScroll } from '../../hooks/useDisableBodyScroll';
 import {
-  SECTION_HELP_CONTENT,
+  getSectionHelpContent,
   type SectionHelpKey,
   type SectionHelpVisualId,
 } from '../../constants/sectionHelp';
+import type { AppFlavor } from '../../app/resolveAppFlavor';
 
 interface SectionHelpModalProps {
+  appFlavor: AppFlavor;
+  supportsShowSaveFilePicker: boolean;
   isOpen: boolean;
   section: SectionHelpKey | null;
   onClose: () => void;
@@ -60,7 +63,13 @@ const sectionAccentClass: Record<SectionHelpKey, string> = {
 /**
  * セクションヘルプモーダル
  */
-const SectionHelpModal: React.FC<SectionHelpModalProps> = ({ isOpen, section, onClose }) => {
+const SectionHelpModal: React.FC<SectionHelpModalProps> = ({
+  appFlavor,
+  supportsShowSaveFilePicker,
+  isOpen,
+  section,
+  onClose,
+}) => {
   useDisableBodyScroll(isOpen);
   const [demoSliderValue, setDemoSliderValue] = useState(24);
   const contentScrollRef = useRef<HTMLDivElement | null>(null);
@@ -204,7 +213,7 @@ const SectionHelpModal: React.FC<SectionHelpModalProps> = ({ isOpen, section, on
 
   if (!isOpen || !section) return null;
 
-  const help = SECTION_HELP_CONTENT[section];
+  const help = getSectionHelpContent({ appFlavor, supportsShowSaveFilePicker })[section];
   const accent = sectionAccentClass[section];
   const chipBaseClass = 'inline-flex items-center gap-1 rounded-lg border text-[10px] md:text-xs leading-none';
 

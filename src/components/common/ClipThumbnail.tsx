@@ -5,6 +5,7 @@
  * 画像はそのまま、動画は先頭フレームをキャプチャして表示する。
  */
 import React, { useRef, useEffect, useState } from 'react';
+import { getPlatformCapabilities } from '../../utils/platform';
 
 interface ClipThumbnailProps {
   file: File;
@@ -15,6 +16,9 @@ const THUMB_WIDTH = 48;
 const THUMB_HEIGHT = 28;
 const VIDEO_FRAME_WAIT_MS = 80;
 const VIDEO_DRAW_RETRY_COUNT = 4;
+const IOS_THUMBNAIL_MIN_PREPARE_MS = 180;
+const IOS_THUMBNAIL_MAX_PREPARE_MS = 900;
+const IOS_THUMBNAIL_PRIME_PLAY_MS = 220;
 
 type FrameAwareVideo = HTMLVideoElement & {
   requestVideoFrameCallback?: (callback: (...args: unknown[]) => void) => number;
@@ -36,18 +40,32 @@ const ClipThumbnail: React.FC<ClipThumbnailProps> = ({ file, type }) => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     setReady(false);
+    const { isIosSafari } = getPlatformCapabilities();
 
     let cancelled = false;
+    let activeVideo: HTMLVideoElement | null = null;
+    let detachActiveVideo: (() => void) | null = null;
     const timeoutIds = new Set<number>();
+    const intervalIds = new Set<number>();
 
     const registerTimeout = (id: number): number => {
       timeoutIds.add(id);
       return id;
     };
 
+    const registerInterval = (id: number): number => {
+      intervalIds.add(id);
+      return id;
+    };
+
     const clearAllTimeouts = () => {
       timeoutIds.forEach((id) => window.clearTimeout(id));
       timeoutIds.clear();
+    };
+
+    const clearAllIntervals = () => {
+      intervalIds.forEach((id) => window.clearInterval(id));
+      intervalIds.clear();
     };
 
     const url = URL.createObjectURL(file);
@@ -66,6 +84,63 @@ const ClipThumbnail: React.FC<ClipThumbnailProps> = ({ file, type }) => {
           timeoutIds.delete(timeoutId);
           resolve();
         }, ms));
+      });
+
+    const waitForVideoReady = (video: HTMLVideoElement): Promise<void> =>
+      new Promise((resolve) => {
+        if (cancelled) {
+          resolve();
+          return;
+        }
+
+        const startedAt = Date.now();
+        const minPrepareMs = isIosSafari ? IOS_THUMBNAIL_MIN_PREPARE_MS : 0;
+        const maxPrepareMs = isIosSafari ? IOS_THUMBNAIL_MAX_PREPARE_MS : 400;
+        let settled = false;
+        let pollId = 0;
+        let timeoutId = 0;
+
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          video.removeEventListener('seeked', onReady);
+          video.removeEventListener('loadeddata', onReady);
+          video.removeEventListener('canplay', onReady);
+          video.removeEventListener('error', onReady);
+          if (pollId) {
+            window.clearInterval(pollId);
+            intervalIds.delete(pollId);
+          }
+          if (timeoutId) {
+            window.clearTimeout(timeoutId);
+            timeoutIds.delete(timeoutId);
+          }
+          resolve();
+        };
+
+        const maybeReady = () => {
+          if (cancelled) {
+            finish();
+            return;
+          }
+          const elapsed = Date.now() - startedAt;
+          const isReady = video.readyState >= 2 && !video.seeking;
+          if (!isReady && elapsed < maxPrepareMs) return;
+          if (elapsed < minPrepareMs) return;
+          finish();
+        };
+
+        const onReady = () => {
+          maybeReady();
+        };
+
+        video.addEventListener('seeked', onReady);
+        video.addEventListener('loadeddata', onReady);
+        video.addEventListener('canplay', onReady);
+        video.addEventListener('error', onReady);
+        pollId = registerInterval(window.setInterval(maybeReady, 40));
+        timeoutId = registerTimeout(window.setTimeout(maybeReady, maxPrepareMs + 50));
+        maybeReady();
       });
 
     const waitForEvent = (
@@ -156,6 +231,68 @@ const ClipThumbnail: React.FC<ClipThumbnailProps> = ({ file, type }) => {
       await wait(VIDEO_FRAME_WAIT_MS);
     };
 
+    const attachVideoForFrameCapture = (video: HTMLVideoElement): (() => void) | null => {
+      if (!isIosSafari || typeof document === 'undefined' || !document.body) return null;
+
+      video.setAttribute('aria-hidden', 'true');
+      Object.assign(video.style, {
+        position: 'fixed',
+        top: '0',
+        left: '0',
+        width: `${THUMB_WIDTH}px`,
+        height: `${THUMB_HEIGHT}px`,
+        opacity: '0.01',
+        pointerEvents: 'none',
+        zIndex: '-1000',
+        visibility: 'visible',
+      });
+
+      document.body.appendChild(video);
+
+      return () => {
+        if (video.parentNode) {
+          video.parentNode.removeChild(video);
+        }
+      };
+    };
+
+    const primeVideoFrameForCapture = async (video: FrameAwareVideo, seekTime: number): Promise<void> => {
+      if (!isIosSafari || cancelled) return;
+
+      const playingPromise = waitForEvent(video, 'playing', IOS_THUMBNAIL_PRIME_PLAY_MS);
+      const timeUpdatePromise = waitForEvent(video, 'timeupdate', IOS_THUMBNAIL_PRIME_PLAY_MS);
+      try {
+        const playResult = video.play();
+        if (playResult && typeof (playResult as Promise<void>).catch === 'function') {
+          void (playResult as Promise<void>).catch(() => {});
+        }
+      } catch {
+        return;
+      }
+
+      await Promise.race([
+        playingPromise,
+        timeUpdatePromise,
+        waitForDecodedFrame(video),
+        wait(IOS_THUMBNAIL_PRIME_PLAY_MS),
+      ]);
+
+      try {
+        video.pause();
+      } catch {
+        // ignore
+      }
+
+      if (cancelled) return;
+
+      if (Math.abs(video.currentTime - seekTime) > 0.08) {
+        await seekVideo(video, seekTime);
+        await waitForVideoReady(video);
+      }
+
+      await waitForDecodedFrame(video);
+    };
+
     const seekVideo = async (video: HTMLVideoElement, time: number): Promise<void> => {
       if (cancelled) return;
 
@@ -200,10 +337,22 @@ const ClipThumbnail: React.FC<ClipThumbnailProps> = ({ file, type }) => {
     } else {
       const loadVideoThumbnail = async () => {
         const video = document.createElement('video') as FrameAwareVideo;
+        activeVideo = video;
         video.muted = true;
+        video.defaultMuted = true;
         video.preload = 'auto';
         video.playsInline = true;
+        video.setAttribute('playsinline', '');
+        video.setAttribute('webkit-playsinline', '');
         video.src = url;
+        const detachCaptureVideo = attachVideoForFrameCapture(video);
+        detachActiveVideo = detachCaptureVideo;
+
+        try {
+          video.load();
+        } catch {
+          // ignore
+        }
 
         const loadedMetadata = video.readyState >= 1 || await waitForEvent(video, 'loadedmetadata', 3000);
         if (!loadedMetadata || cancelled) {
@@ -211,6 +360,7 @@ const ClipThumbnail: React.FC<ClipThumbnailProps> = ({ file, type }) => {
             drawVideoFallback();
             setReady(true);
           }
+          detachCaptureVideo?.();
           revokeUrl();
           return;
         }
@@ -222,12 +372,9 @@ const ClipThumbnail: React.FC<ClipThumbnailProps> = ({ file, type }) => {
           if (cancelled) break;
 
           await seekVideo(video, seekTime);
-
-          if (video.readyState < 2) {
-            await waitForEvent(video, 'loadeddata', 800);
-          }
-
+          await waitForVideoReady(video);
           await waitForDecodedFrame(video);
+          await primeVideoFrameForCapture(video, seekTime);
 
           for (let retry = 0; retry < VIDEO_DRAW_RETRY_COUNT; retry++) {
             if (cancelled) break;
@@ -247,6 +394,14 @@ const ClipThumbnail: React.FC<ClipThumbnailProps> = ({ file, type }) => {
           }
           setReady(true);
         }
+        try {
+          video.pause();
+        } catch {
+          // ignore
+        }
+        detachCaptureVideo?.();
+        detachActiveVideo = null;
+        activeVideo = null;
         revokeUrl();
       };
 
@@ -256,6 +411,15 @@ const ClipThumbnail: React.FC<ClipThumbnailProps> = ({ file, type }) => {
     return () => {
       cancelled = true;
       clearAllTimeouts();
+      clearAllIntervals();
+      try {
+        activeVideo?.pause();
+      } catch {
+        // ignore
+      }
+      detachActiveVideo?.();
+      activeVideo = null;
+      detachActiveVideo = null;
       revokeUrl();
     };
   }, [file, type]);

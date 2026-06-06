@@ -1,0 +1,18 @@
+{
+  "mode": "black-segments",
+  "input_path": "C:\\Users\\kamep\\Downloads\\modify.mp4",
+  "fps": 30.0,
+  "total_frames": 964,
+  "duration_sec_estimate": 32.13333333333333,
+  "scope": "full",
+  "tail_seconds": null,
+  "scope_start_frame": 0,
+  "scope_end_frame_exclusive": 964,
+  "black_threshold": 8.0,
+  "min_segment_frames": 3,
+  "black_frame_count_in_scope": 0,
+  "black_frame_ratio_in_scope": 0.0,
+  "has_black_at_video_end": false,
+  "segment_count": 0,
+  "segments": []
+}

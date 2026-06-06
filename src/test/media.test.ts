@@ -194,9 +194,9 @@ describe('validateScale', () => {
 
 describe('validatePosition', () => {
   it('should clamp position to valid range', () => {
-    // default limit is 1280
-    expect(validatePosition(2000)).toBeLessThanOrEqual(1280);
-    expect(validatePosition(-2000)).toBeGreaterThanOrEqual(-1280);
+    // default limit is MAX_CANVAS_WIDTH (1920)
+    expect(validatePosition(3000)).toBeLessThanOrEqual(1920);
+    expect(validatePosition(-3000)).toBeGreaterThanOrEqual(-1920);
     expect(validatePosition(100)).toBe(100);
   });
 

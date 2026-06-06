@@ -27,6 +27,7 @@ import type { MediaItem } from '../../types';
 import MiniPreview from '../common/MiniPreview';
 import ClipThumbnail from '../common/ClipThumbnail';
 import { SwipeProtectedSlider } from '../SwipeProtectedSlider';
+import { useCanvasStore } from '../../stores/canvasStore';
 
 export interface ClipItemProps {
   item: MediaItem;
@@ -82,6 +83,8 @@ const ClipItem: React.FC<ClipItemProps> = ({
   onUpdateFadeOutDuration,
 }) => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const canvasWidth = useCanvasStore((s) => s.width);
+  const canvasHeight = useCanvasStore((s) => s.height);
   const isDisabled = isClipsLocked || v.isLocked;
 
   // スワイプ保護用コールバック
@@ -330,8 +333,8 @@ const ClipItem: React.FC<ClipItemProps> = ({
               </button>
             </div>
             <SwipeProtectedSlider
-              min={-1280}
-              max={1280}
+              min={-canvasWidth}
+              max={canvasWidth}
               step={10}
               value={v.positionX || 0}
               onChange={handlePositionX}
@@ -356,8 +359,8 @@ const ClipItem: React.FC<ClipItemProps> = ({
               </button>
             </div>
             <SwipeProtectedSlider
-              min={-720}
-              max={720}
+              min={-canvasHeight}
+              max={canvasHeight}
               step={10}
               value={v.positionY || 0}
               onChange={handlePositionY}

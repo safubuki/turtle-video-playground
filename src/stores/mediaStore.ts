@@ -28,13 +28,14 @@ interface MediaState {
   isClipsLocked: boolean;
 
   // Actions
-  addMediaItems: (files: File[]) => void;
+  addMediaItems: (files: File[]) => Promise<void>;
   removeMediaItem: (id: string) => void;
   moveMediaItem: (index: number, direction: 'up' | 'down') => void;
   updateMediaItem: (id: string, updates: Partial<MediaItem>) => void;
 
   // Video specific
   setVideoDuration: (id: string, originalDuration: number) => void;
+  setMediaSourceDimensions: (id: string, sourceWidth: number, sourceHeight: number) => void;
   updateVideoTrim: (id: string, type: 'start' | 'end', value: number) => void;
 
   // Image specific
@@ -77,9 +78,12 @@ export const useMediaStore = create<MediaState>()(
       isClipsLocked: false,
 
       // Add media items
-      addMediaItems: (files) => {
+      addMediaItems: async (files) => {
         useLogStore.getState().info('MEDIA', 'メディアアイテムを追加', { fileCount: files.length, fileNames: files.map(f => f.name) });
-        const newItems = files.map(createMediaItem);
+        const newItems: MediaItem[] = [];
+        for (const file of files) {
+          newItems.push(await createMediaItem(file));
+        }
         set((state) => {
           const updated = [...state.mediaItems, ...newItems];
           useLogStore.getState().info('MEDIA', 'メディアアイテム追加完了', { totalItems: updated.length, totalDuration: calculateTotalDuration(updated) });
@@ -152,6 +156,24 @@ export const useMediaStore = create<MediaState>()(
             mediaItems: updated,
             totalDuration: calculateTotalDuration(updated),
           };
+        });
+      },
+
+      // Set source dimensions (called when video/image metadata loads)
+      setMediaSourceDimensions: (id, sourceWidth, sourceHeight) => {
+        if (!Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight)
+          || sourceWidth <= 0 || sourceHeight <= 0) {
+          return;
+        }
+        set((state) => {
+          const updated = state.mediaItems.map((item) => {
+            if (item.id !== id) return item;
+            if (item.sourceWidth === sourceWidth && item.sourceHeight === sourceHeight) {
+              return item;
+            }
+            return { ...item, sourceWidth, sourceHeight };
+          });
+          return { mediaItems: updated };
         });
       },
 
@@ -301,7 +323,15 @@ export const useMediaStore = create<MediaState>()(
 
       // Clips section lock
       toggleClipsLock: () => {
-        set((state) => ({ isClipsLocked: !state.isClipsLocked }));
+        set((state) => {
+          const nextIsClipsLocked = !state.isClipsLocked;
+          return {
+            isClipsLocked: nextIsClipsLocked,
+            // 旧 save/restore 契約との互換用 alias。
+            // 関連する操作では isClipsLocked と同期する。
+            isLocked: nextIsClipsLocked,
+          };
+        });
       },
 
       // Clear all
@@ -309,7 +339,7 @@ export const useMediaStore = create<MediaState>()(
         const { mediaItems } = get();
         useLogStore.getState().info('MEDIA', '全メディアをクリア', { itemCount: mediaItems.length });
         mediaItems.forEach((item) => revokeObjectUrl(item.url));
-        set({ mediaItems: [], totalDuration: 0, isClipsLocked: false });
+        set({ mediaItems: [], totalDuration: 0, isClipsLocked: false, isLocked: false });
       },
 
       // Restore from save (isLockedのエイリアス)
@@ -322,6 +352,7 @@ export const useMediaStore = create<MediaState>()(
           mediaItems: items,
           totalDuration: calculateTotalDuration(items),
           isClipsLocked: isLocked,
+          isLocked,
         });
       },
     }),

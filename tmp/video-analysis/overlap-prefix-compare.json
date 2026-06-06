@@ -1,0 +1,149 @@
+{
+  "overlap_frames": 964,
+  "overlap_duration_sec": 32.133,
+  "videos": {
+    "modify": {
+      "fps": 30.0,
+      "black_frame_count": 0,
+      "black_frame_ratio": 0.0,
+      "freeze_frame_count": 269,
+      "freeze_frame_ratio": 0.2793354101765317,
+      "freeze_segments": [
+        {
+          "start_frame": 1,
+          "end_frame": 3,
+          "start_time_sec": 0.033,
+          "end_time_sec": 0.1,
+          "frame_count": 3
+        },
+        {
+          "start_frame": 594,
+          "end_frame": 599,
+          "start_time_sec": 19.8,
+          "end_time_sec": 19.967,
+          "frame_count": 6
+        },
+        {
+          "start_frame": 601,
+          "end_frame": 629,
+          "start_time_sec": 20.033,
+          "end_time_sec": 20.967,
+          "frame_count": 29
+        },
+        {
+          "start_frame": 631,
+          "end_frame": 649,
+          "start_time_sec": 21.033,
+          "end_time_sec": 21.633,
+          "frame_count": 19
+        },
+        {
+          "start_frame": 651,
+          "end_frame": 659,
+          "start_time_sec": 21.7,
+          "end_time_sec": 21.967,
+          "frame_count": 9
+        }
+      ],
+      "black_segments": []
+    },
+    "v410": {
+      "fps": 30.0,
+      "black_frame_count": 6,
+      "black_frame_ratio": 0.006224066390041493,
+      "freeze_frame_count": 217,
+      "freeze_frame_ratio": 0.22533748701973,
+      "freeze_segments": [
+        {
+          "start_frame": 590,
+          "end_frame": 594,
+          "start_time_sec": 19.667,
+          "end_time_sec": 19.8,
+          "frame_count": 5
+        },
+        {
+          "start_frame": 596,
+          "end_frame": 599,
+          "start_time_sec": 19.867,
+          "end_time_sec": 19.967,
+          "frame_count": 4
+        },
+        {
+          "start_frame": 601,
+          "end_frame": 629,
+          "start_time_sec": 20.033,
+          "end_time_sec": 20.967,
+          "frame_count": 29
+        },
+        {
+          "start_frame": 631,
+          "end_frame": 648,
+          "start_time_sec": 21.033,
+          "end_time_sec": 21.6,
+          "frame_count": 18
+        },
+        {
+          "start_frame": 650,
+          "end_frame": 659,
+          "start_time_sec": 21.667,
+          "end_time_sec": 21.967,
+          "frame_count": 10
+        }
+      ],
+      "black_segments": []
+    },
+    "v500": {
+      "fps": 30.0,
+      "black_frame_count": 7,
+      "black_frame_ratio": 0.007261410788381743,
+      "freeze_frame_count": 253,
+      "freeze_frame_ratio": 0.26272066458982346,
+      "freeze_segments": [
+        {
+          "start_frame": 591,
+          "end_frame": 595,
+          "start_time_sec": 19.7,
+          "end_time_sec": 19.833,
+          "frame_count": 5
+        },
+        {
+          "start_frame": 597,
+          "end_frame": 599,
+          "start_time_sec": 19.9,
+          "end_time_sec": 19.967,
+          "frame_count": 3
+        },
+        {
+          "start_frame": 601,
+          "end_frame": 629,
+          "start_time_sec": 20.033,
+          "end_time_sec": 20.967,
+          "frame_count": 29
+        },
+        {
+          "start_frame": 631,
+          "end_frame": 649,
+          "start_time_sec": 21.033,
+          "end_time_sec": 21.633,
+          "frame_count": 19
+        },
+        {
+          "start_frame": 651,
+          "end_frame": 659,
+          "start_time_sec": 21.7,
+          "end_time_sec": 21.967,
+          "frame_count": 9
+        }
+      ],
+      "black_segments": [
+        {
+          "start_frame": 449,
+          "end_frame": 451,
+          "start_time_sec": 14.967,
+          "end_time_sec": 15.033,
+          "frame_count": 3
+        }
+      ]
+    }
+  }
+}

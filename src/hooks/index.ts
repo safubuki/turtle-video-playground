@@ -15,8 +15,8 @@ export type { UseAudioContextReturn } from './useAudioContext';
 export { usePlayback } from './usePlayback';
 export type { UsePlaybackReturn } from './usePlayback';
 
-export { useExport } from './useExport';
-export type { UseExportReturn } from './useExport';
+export { createUseExport } from './useExport';
+export type { UseExportReturn, UseExportRuntimeConfig } from './useExport';
 
 export { useAiNarration } from './useAiNarration';
 export type { UseAiNarrationReturn } from './useAiNarration';

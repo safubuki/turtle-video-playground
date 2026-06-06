@@ -21,3 +21,6 @@ export type { LogEntry, LogLevel, LogCategory, SystemInfo, MemoryStats } from '.
 
 // Project Store
 export { useProjectStore } from './projectStore';
+
+// Canvas Store
+export { useCanvasStore, computeCanvasSizeFromSource } from './canvasStore';

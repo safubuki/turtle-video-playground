@@ -3,9 +3,10 @@
  * @author Turtle Village
  * @description BGM（バックグラウンドミュージック）のアップロード、音量調整、フェード設定、削除を行うセクションコンポーネント。
  */
-import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Upload, Lock, Unlock, Music, Volume2, Timer, ChevronDown, ChevronRight, RefreshCw, CircleHelp, Trash2 } from 'lucide-react';
 import type { AudioTrack } from '../../types';
+import { getAudioUploadAccept } from '../../utils/platform';
 import { SwipeProtectedSlider } from '../SwipeProtectedSlider';
 
 interface BgmSectionProps {
@@ -48,17 +49,7 @@ const BgmSection: React.FC<BgmSectionProps> = ({
 }) => {
   const [isOpen, setIsOpen] = useState(true);
   const prevBgmUrlRef = useRef<string | null>(bgm?.url ?? null);
-  const isIosSafari = useMemo(() => {
-    if (typeof navigator === 'undefined') return false;
-    const ua = navigator.userAgent;
-    const isIOS = /iP(hone|ad|od)/i.test(ua) ||
-      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    const isSafari = /Safari/i.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS|DuckDuckGo/i.test(ua);
-    return isIOS && isSafari;
-  }, []);
-  const audioFileAccept = isIosSafari
-    ? 'audio/*,.mp3,.m4a,.wav,.aac,.flac,.ogg,.oga,.opus,.caf,.aif,.aiff,.mp4,.m4v,.mov,.webm'
-    : 'audio/*';
+  const audioFileAccept = getAudioUploadAccept();
 
   // スワイプ保護用ハンドラ
   const handleStartPointChange = useCallback(

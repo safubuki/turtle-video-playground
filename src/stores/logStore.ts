@@ -48,12 +48,30 @@ function loadLogsFromStorage(): LogEntry[] {
 
 /**
  * sessionStorageにログを保存
+ * 容量超過時は古いログを切り捨てて再試行する
  */
 function saveLogsToStorage(entries: LogEntry[]): void {
     try {
         sessionStorage.setItem(LOG_STORAGE_KEY, JSON.stringify(entries));
-    } catch {
-        // 保存失敗時は何もしない
+    } catch (e) {
+        // QuotaExceeded の場合は新しいログを優先して残すために、末尾だけ保存する
+        const isQuotaError = e instanceof DOMException && (
+            e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014
+        );
+        if (!isQuotaError) {
+            return;
+        }
+        const trimmed = entries.slice(-Math.floor(MAX_LOG_ENTRIES / 4));
+        try {
+            sessionStorage.setItem(LOG_STORAGE_KEY, JSON.stringify(trimmed));
+        } catch {
+            // それでも保存できなければ既存データを破棄するに留める
+            try {
+                sessionStorage.removeItem(LOG_STORAGE_KEY);
+            } catch {
+                // 何もしない
+            }
+        }
     }
 }
 

@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import useMediaStore from '../stores/mediaStore';
 import useAudioStore from '../stores/audioStore';
 import { useCaptionStore } from '../stores/captionStore';
+import { useUpdateStore } from '../stores/updateStore';
 
 /**
  * 編集中のデータがある場合にブラウザの離脱を防止するフック
@@ -11,9 +12,14 @@ export const usePreventUnload = () => {
     const bgm = useAudioStore((state) => state.bgm);
     const narrations = useAudioStore((state) => state.narrations);
     const captions = useCaptionStore((state) => state.captions);
+    const isApplyingUpdate = useUpdateStore((state) => state.isApplyingUpdate);
 
     useEffect(() => {
         const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+            if (isApplyingUpdate) {
+                return;
+            }
+
             const hasUnsavedChanges =
                 mediaItems.length > 0 ||
                 bgm !== null ||
@@ -32,5 +38,5 @@ export const usePreventUnload = () => {
         return () => {
             window.removeEventListener('beforeunload', handleBeforeUnload);
         };
-    }, [mediaItems, bgm, narrations, captions]);
+    }, [mediaItems, bgm, narrations, captions, isApplyingUpdate]);
 };
