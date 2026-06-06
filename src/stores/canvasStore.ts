@@ -5,7 +5,8 @@
  *
  * プレビューは描画負荷を抑えるため上限 1280×720 とする。
  * 書き出し時のみ、ソース動画の解像度に応じて 1920×1080 まで動的に拡大する。
- * 横向き固定とし、縦長ソースは既定サイズへフォールバックする。
+ * 出力アスペクト比は常に 16:9 に固定し（先頭動画の比率に引きずられない）、
+ * 16:9 でない横長ソースは黒帯付きで内包する。縦長ソースは既定サイズへフォールバックする。
  */
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
@@ -41,10 +42,15 @@ interface CanvasState {
 }
 
 /**
- * ソースサイズと最大サイズから、横向き固定でキャンバスサイズを算出する。
+ * ソースサイズと最大サイズから、常に 16:9 のキャンバスサイズを算出する。
  *
- * - 縦長ソース（height > width）はフォールバックとして既定 16:9 サイズへ戻す。
- * - 横長ソースはアスペクト比を保ったまま max{Width,Height} へ収まるよう縮小する。
+ * - 出力アスペクト比は常に 16:9 に固定する（先頭動画の比率に引きずられない）。
+ * - 解像度は可変。ソースを縮小せず内包できる最小の 16:9 枠を採り、品質を保つ。
+ *   - 16:9 より縦長（例 1204×764, 1024×768）のソースは、高さを基準に左右へ広げる
+ *     （プレビュー/書き出しで左右が黒帯になり、拡大機能で押し出せる）。
+ *   - 16:9 より横長（例 シネスコ）のソースは、幅を基準に上下へ広げる（上下が黒帯）。
+ * - max{Width,Height} を超える場合のみ 16:9 を保ったまま縮小する。
+ * - 縦長ソース（height > width）・無効値は既定の 16:9（最大枠）へフォールバックする。
  * - H.264 の都合により幅・高さは偶数に丸める。
  */
 export function computeCanvasSizeFromSource(
@@ -60,16 +66,28 @@ export function computeCanvasSizeFromSource(
   if (sourceHeight > sourceWidth) {
     return fallbackLandscape(maxWidth, maxHeight);
   }
-  if (sourceWidth <= maxWidth && sourceHeight <= maxHeight) {
-    return {
-      width: roundToEven(sourceWidth),
-      height: roundToEven(sourceHeight),
-    };
+
+  const targetAspect = 16 / 9;
+  const sourceAspect = sourceWidth / sourceHeight;
+
+  // ソースを縮小せずに内包できる 16:9 枠を求める（元解像度を維持し、黒帯で 16:9 へ整える）。
+  let width: number;
+  let height: number;
+  if (sourceAspect >= targetAspect) {
+    // 16:9 と同じか横長のソース → 幅が基準（上下が黒帯）。
+    width = sourceWidth;
+    height = width / targetAspect;
+  } else {
+    // 16:9 より縦長のソース → 高さが基準（左右が黒帯）。
+    height = sourceHeight;
+    width = height * targetAspect;
   }
-  const scale = Math.min(maxWidth / sourceWidth, maxHeight / sourceHeight);
+
+  // 最大枠を超える場合のみ、16:9 を保ったまま縮小する。
+  const scale = Math.min(1, maxWidth / width, maxHeight / height);
   return {
-    width: roundToEven(sourceWidth * scale),
-    height: roundToEven(sourceHeight * scale),
+    width: roundToEven(width * scale),
+    height: roundToEven(height * scale),
   };
 }
 

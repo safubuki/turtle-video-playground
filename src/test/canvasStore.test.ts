@@ -26,7 +26,7 @@ describe('computeCanvasSizeFromSource', () => {
     expect(nanFallback.height).toBe(MAX_CANVAS_HEIGHT);
   });
 
-  it('uses source dimensions when within cap (landscape)', () => {
+  it('keeps 16:9 source dimensions within cap', () => {
     expect(computeCanvasSizeFromSource(1280, 720)).toEqual({
       width: 1280,
       height: 720,
@@ -54,10 +54,24 @@ describe('computeCanvasSizeFromSource', () => {
     expect(result.height).toBe(MAX_CANVAS_HEIGHT);
   });
 
-  it('preserves non-16:9 landscape aspect ratios', () => {
+  it('normalizes non-16:9 landscape sources to a 16:9 canvas (pillarbox, source resolution preserved)', () => {
+    // 16:9 より縦長: 高さを基準に左右へ 16:9 まで広げる（左右が黒帯）。
     expect(computeCanvasSizeFromSource(1024, 768)).toEqual({
-      width: 1024,
+      width: 1366,
       height: 768,
+    });
+    // ユーザー報告の例。元の 764px 高さを保持したまま 16:9 にする。
+    expect(computeCanvasSizeFromSource(1204, 764)).toEqual({
+      width: 1358,
+      height: 764,
+    });
+  });
+
+  it('normalizes ultra-wide landscape sources to 16:9 (letterbox)', () => {
+    // 16:9 より横長: 幅を基準に上下へ広げる（上下が黒帯）。
+    expect(computeCanvasSizeFromSource(1280, 536)).toEqual({
+      width: 1280,
+      height: 720,
     });
   });
 
