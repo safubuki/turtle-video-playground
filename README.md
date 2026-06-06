@@ -43,9 +43,9 @@
 - 実行ログの確認、コピー、JSON出力、クリア
 - Google AI Studio / Gemini API の利用上限に関する注意表示
 
-## すぐに使う（GitHub Pages）
+## すぐに使う（Cloudflare Pages）
 
-- 公開URL: `https://safubuki.github.io/turtle-video-playground/`
+- 公開URL: `https://turtle-video.pages.dev/`
 - URLにアクセスするだけで利用できます（インストール不要）。
 - 動作確認機種:
   - スマホ: Pixel 6a（Android・Chrome）

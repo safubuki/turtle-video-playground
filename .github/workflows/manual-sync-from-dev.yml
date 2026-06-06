@@ -4,7 +4,6 @@ on:
   workflow_dispatch:
 
 permissions:
-  actions: write
   contents: write
 
 jobs:
@@ -41,6 +40,7 @@ jobs:
           rsync -a --delete \
             --exclude '.git' \
             --exclude '.github/workflows/manual-sync-from-dev.yml' \
+            --exclude '.github/workflows/deploy.yml' \
             --exclude 'scripts/apply-playground-sync-overrides.mjs' \
             ../source-repo/ ./
 
@@ -67,19 +67,7 @@ jobs:
           git commit -m "chore(sync): sync from safubuki/turtle-video ($(TZ=Asia/Tokyo date +'%Y-%m-%d %H:%M:%S %Z'))"
 
       # 生成した同期コミットを origin へ反映する。
+      # push をトリガーに Cloudflare Pages が自動でビルド・公開するため、
+      # ここで deploy workflow を明示的に起動する必要はない。
       - name: 変更を push
         run: git push
-
-      # 同期完了後に公開用 deploy を起動する。
-      - name: deploy workflow を起動
-        if: success()
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'deploy.yml',
-              ref: 'main',
-            });

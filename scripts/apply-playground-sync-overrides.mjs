@@ -20,7 +20,9 @@ const targetRepoSlug = `${targetRepoOwner}/${targetRepoName}`;
 const sourcePagesUrl = `https://${sourceRepoOwner}.github.io/${sourceRepoName}/`;
 const targetPagesUrl = `https://${targetRepoOwner}.github.io/${targetRepoName}/`;
 const sourceBasePath = `/${sourceRepoName}/`;
-const targetBasePath = `/${targetRepoName}/`;
+// Cloudflare Pages はルート配信のため、base はリポジトリ名ではなく "/" にする。
+// GitHub Pages 等のサブパス配信に戻す場合は TARGET_BASE_PATH で上書きできる（例: /turtle-video-playground/）。
+const targetBasePath = process.env.TARGET_BASE_PATH ?? '/';
 const sourceLocalRepoPath = `C:\\git_home\\${sourceRepoName}`;
 
 function replaceAll(text, source, target) {
