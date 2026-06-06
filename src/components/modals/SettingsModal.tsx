@@ -582,7 +582,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ appFlavor, isOpen, onClos
         {/* コンテンツ */}
         <div className="flex-1 overflow-hidden flex flex-col">
           {activeInfoPanel === 'help' && (
-            <div className="p-3 border-b border-gray-700/70 shrink-0">
+            <div className="p-3 border-b border-gray-700/70 shrink-0 max-h-[60vh] overflow-y-auto">
               <div className="rounded-xl border border-orange-400/45 bg-linear-to-br from-orange-500/18 via-amber-500/12 to-orange-500/6 p-3 md:p-4 space-y-2">
                 <div className="flex items-start justify-between gap-2">
                   <h3 className="text-sm font-bold text-orange-100 flex items-center gap-1">
@@ -625,7 +625,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ appFlavor, isOpen, onClos
             </div>
           )}
           {activeInfoPanel === 'history' && APP_RELEASE_HISTORY && (
-            <div className="p-3 border-b border-gray-700/70 shrink-0">
+            <div className="p-3 border-b border-gray-700/70 shrink-0 max-h-[60vh] overflow-y-auto">
               <div className="rounded-xl border border-gray-300/20 bg-linear-to-br from-gray-100/14 via-slate-100/10 to-gray-300/6 p-3 md:p-4 space-y-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="space-y-1">
