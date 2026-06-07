@@ -226,6 +226,64 @@ export function createCaptionGlyphCanvas(options: CaptionGlyphOptions): HTMLCanv
 }
 
 /**
+ * キャプチャ前に、プレビューフレームが確定するのを待つ。
+ *
+ * シークバーで終端などへ移動した直後は、video 要素のデコード済みフレームが
+ * 目標時刻に追いつく前にキャンバスへ描画され得る。この状態でキャプチャすると
+ * 「画面に見えているフレーム」と「保存画像」がずれ、1 フレーム前が保存される。
+ *
+ * 対策として、進行中のシーク（`seeking`）が `seeked` で完了するのを待ち、
+ * さらにエンジンの再描画（requestAnimationFrame ベース）が走るのを待ってから
+ * キャンバスを読み取ることで、画面に見えている確定フレームと一致させる。
+ *
+ * 通常再生で終端に達した場合は `seeking` 中の要素が無いため、ほぼ素通りする
+ * （従来挙動を維持）。`timeoutMs` は、`seeked` が来ない／デコードが極端に遅い
+ * 場合でも固まらないための保険。
+ *
+ * @param mediaElements - id をキーにしたメディア要素のレコード
+ * @param timeoutMs - 確定待ちの上限（既定 400ms）
+ */
+export function waitForPreviewFrameSettled(
+  mediaElements: Record<string, HTMLVideoElement | HTMLImageElement | HTMLAudioElement>,
+  timeoutMs = 400,
+): Promise<void> {
+  const seekingVideos = Object.values(mediaElements).filter(
+    (el): el is HTMLVideoElement => el instanceof HTMLVideoElement && el.seeking,
+  );
+
+  const waitSeeked: Promise<void> =
+    seekingVideos.length === 0
+      ? Promise.resolve()
+      : Promise.all(
+          seekingVideos.map(
+            (video) =>
+              new Promise<void>((resolve) => {
+                const onSeeked = () => {
+                  video.removeEventListener('seeked', onSeeked);
+                  resolve();
+                };
+                video.addEventListener('seeked', onSeeked, { once: true });
+              }),
+          ),
+        ).then(() => undefined);
+
+  const settled = waitSeeked.then(
+    () =>
+      new Promise<void>((resolve) => {
+        // seeked 後、エンジンの再描画（rAF）が走ってキャンバスが更新されるのを待つ。
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        } else {
+          resolve();
+        }
+      }),
+  );
+
+  const timeout = new Promise<void>((resolve) => setTimeout(resolve, timeoutMs));
+  return Promise.race([settled, timeout]);
+}
+
+/**
  * Canvasの現在の内容をキャプチャしてPNG画像としてダウンロードする
  * @param canvas - キャプチャ対象のCanvas要素
  * @param filename - 保存ファイル名（拡張子なし）。未指定時はタイムスタンプベースの名前を生成

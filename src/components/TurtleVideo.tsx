@@ -26,7 +26,7 @@ import { usePreventUnload } from '../hooks/usePreventUnload';
 import { useProjectStore } from '../stores/projectStore';
 
 // Utils
-import { captureCanvasAsImage } from '../utils/canvas';
+import { captureCanvasAsImage, waitForPreviewFrameSettled } from '../utils/canvas';
 import { preserveOriginalFileName, resolveAiNarrationFileName } from '../utils/fileNames';
 import { saveObjectUrlWithClientFileStrategy } from '../utils/fileSave';
 import { openFilesWithPicker, shouldUseMediaOpenFilePicker } from '../utils/platform';
@@ -2203,6 +2203,12 @@ const TurtleVideo: React.FC<TurtleVideoProps> = ({ appFlavor, previewRuntime, ex
       showToast('キャプチャに失敗しました');
       return;
     }
+
+    // シークで終端へ移動した直後などは、video のデコード済みフレームが目標時刻に
+    // 追いつく前に描画されることがあり、保存画像が画面より 1 フレーム前になる。
+    // 進行中のシーク完了と再描画を待ってから読み取り、画面の確定フレームと一致させる。
+    // （通常再生で終端に来た場合は seeking 中の要素が無いためほぼ素通り＝従来挙動）
+    await waitForPreviewFrameSettled(mediaElementsRef.current);
 
     const timestamp = formatTime(currentTimeRef.current).replace(':', 'm') + 's';
     const filename = `turtle_capture_${timestamp}_${Date.now()}`;
